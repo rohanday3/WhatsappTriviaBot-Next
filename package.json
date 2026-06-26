@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-trivia-next",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "private": true,
   "description": "Concurrent WhatsApp trivia bot with group and direct games, durable leaderboards, and production-safe deployment",
   "type": "module",

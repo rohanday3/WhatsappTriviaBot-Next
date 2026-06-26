@@ -8,6 +8,15 @@ export class KeyedQueue {
     return this.depths.get(key) ?? 0;
   }
 
+  get stats(): { activeKeys: number; pendingTasks: number; maxDepth: number } {
+    const values = [...this.depths.values()];
+    return {
+      activeKeys: this.depths.size,
+      pendingTasks: values.reduce((total, depth) => total + depth, 0),
+      maxDepth: values.length ? Math.max(...values) : 0,
+    };
+  }
+
   async run<T>(key: string, task: () => Promise<T>): Promise<T> {
     const depth = this.depth(key);
     if (depth >= this.maxDepthPerKey) {

@@ -62,3 +62,65 @@ test('runs games concurrently across chats but refuses a second game in the same
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+
+test('offers hints only when they can remove two wrong options without revealing the answer', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'trivia-hint-'));
+  const db = new Database(join(directory, 'game.db'));
+  const repository = new Repository(db);
+  const sent: Array<{ chatId: string; text: string }> = [];
+
+  class FixedProvider {
+    constructor(private readonly fixedQuestion: TriviaQuestion) {}
+    async getQuestions(input: { count: number }): Promise<TriviaQuestion[]> {
+      return Array.from({ length: input.count }, (_, index) => ({
+        ...this.fixedQuestion,
+        sourceId: `${this.fixedQuestion.sourceId}:${index}`,
+        hash: `${this.fixedQuestion.hash}:${index}`,
+      }));
+    }
+  }
+
+  try {
+    repository.touchChat('solo@s.whatsapp.net', false);
+    const player = repository.upsertPlayer('solo@s.whatsapp.net', undefined, 'Solo');
+    const multipleChoiceEngine = new GameEngine(
+      repository,
+      new FixedProvider(question) as unknown as QuestionProvider,
+      async (chatId, text) => { sent.push({ chatId, text }); },
+    );
+    multipleChoiceEngine.initialize();
+    await multipleChoiceEngine.startGame('solo@s.whatsapp.net', false, player, {
+      mode: 'classic', questions: 1, difficulty: 'mixed', category: null,
+    });
+    await multipleChoiceEngine.hint('solo@s.whatsapp.net', player);
+    const hint = sent.at(-1)?.text ?? '';
+    assert.match(hint, /two wrong options removed/i);
+    assert.equal(hint.split('\n').filter((line) => /^[A-D]\)/.test(line)).length, 2);
+    await multipleChoiceEngine.stopGame('solo@s.whatsapp.net');
+
+    const binaryQuestion: TriviaQuestion = {
+      ...question,
+      sourceId: 'fake:boolean',
+      prompt: 'The sky is blue.',
+      options: ['True', 'False'],
+      correctIndex: 0,
+      hash: 'fake-boolean',
+    };
+    const binaryEngine = new GameEngine(
+      repository,
+      new FixedProvider(binaryQuestion) as unknown as QuestionProvider,
+      async (chatId, text) => { sent.push({ chatId, text }); },
+    );
+    binaryEngine.initialize();
+    await binaryEngine.startGame('solo@s.whatsapp.net', false, player, {
+      mode: 'classic', questions: 1, difficulty: 'mixed', category: null,
+    });
+    await binaryEngine.hint('solo@s.whatsapp.net', player);
+    assert.match(sent.at(-1)?.text ?? '', /not available for two-choice questions/i);
+    await binaryEngine.stopGame('solo@s.whatsapp.net');
+  } finally {
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

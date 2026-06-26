@@ -32,6 +32,10 @@ export class GameEngine {
     return this.games.size;
   }
 
+  get queueStats(): { activeKeys: number; pendingTasks: number; maxDepth: number } {
+    return this.queue.stats;
+  }
+
   gameForChat(chatId: string): ActiveGame | null {
     return this.games.get(chatId) ?? null;
   }
@@ -198,7 +202,7 @@ export class GameEngine {
         return;
       }
       if (game.isGroup) {
-        await this.sendText(chatId, '💡 Hints are private-game only so one player cannot reveal clues to the group.');
+        await this.sendText(chatId, '💡 Hints are only available in one-player games. In a group, the clue would be shown to every player.');
         return;
       }
       if (!game.hintsEnabled) {
@@ -211,6 +215,10 @@ export class GameEngine {
       }
       const question = game.questions[game.currentIndex];
       if (!question) return;
+      if (question.options.length < 4) {
+        await this.sendText(chatId, '💡 A hint is not available for two-choice questions because it would reveal the answer.');
+        return;
+      }
       const wrong = question.options
         .map((_, index) => index)
         .filter((index) => index !== question.correctIndex);
@@ -223,7 +231,7 @@ export class GameEngine {
         .join('\n');
       game.hintedPlayerIds.add(player.id);
       this.repository.markHintUsed(game.id, player.id);
-      await this.sendText(chatId, `💡 *50/50 hint* (25% point penalty)\n${remaining}`);
+      await this.sendText(chatId, `💡 *Hint* — two wrong options removed (25% point penalty)\n${remaining}`);
     });
   }
 
@@ -285,7 +293,7 @@ export class GameEngine {
       `_${question.category} • ${question.difficulty.toUpperCase()}_\n` +
       `⏱️ ${seconds}s\n\n` +
       `*${question.prompt}*\n\n${options}` +
-      `${!game.isGroup && game.hintsEnabled ? '\n\nType */hint* for a 50/50.' : ''}`
+      `${!game.isGroup && game.hintsEnabled && question.options.length >= 4 ? '\n\nType */hint* to remove two wrong options (25% point penalty).' : ''}`
     );
   }
 

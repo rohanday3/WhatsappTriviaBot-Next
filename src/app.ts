@@ -1,5 +1,14 @@
 import { randomInt } from 'node:crypto';
+import { statfsSync, statSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { config } from './config.js';
+import {
+  formatAdminHealthReport,
+  oneMinuteLoadAverage,
+  processCpuAveragePercent,
+  type RecentServiceError,
+} from './admin/health-report.js';
 import { Database } from './db/database.js';
 import { Repository } from './db/repository.js';
 import { ACHIEVEMENTS } from './game/achievements.js';
@@ -25,6 +34,7 @@ export class TriviaApplication {
   private databaseReady = true;
   private lastMessageAt: number | null = null;
   private lastErrorAt: number | null = null;
+  private readonly recentErrors: RecentServiceError[] = [];
   private cleanupTimer: NodeJS.Timeout | null = null;
   private stopping = false;
 
@@ -33,6 +43,7 @@ export class TriviaApplication {
       this.db,
       (message) => this.handleMessage(message),
       (state) => this.handleConnectionState(state),
+      (error, label) => this.recordError(error, label),
     );
     this.engine = new GameEngine(
       this.repository,
@@ -167,7 +178,7 @@ export class TriviaApplication {
           break;
         case 'help':
         case 'commands':
-          await this.sendHelp(message.chatId);
+          await this.sendHelp(message);
           break;
         case 'about':
           await this.sendAbout(message.chatId);
@@ -177,6 +188,10 @@ export class TriviaApplication {
             message.chatId,
             `🏓 Pong — WhatsApp: *${this.transport.connectionState}*, games: *${this.engine.activeGameCount}*`,
           );
+          break;
+        case 'health':
+        case 'serverhealth':
+          await this.handleAdminHealth(message, args);
           break;
         case 'egg':
           await this.sendEgg(message.chatId);
@@ -442,6 +457,63 @@ export class TriviaApplication {
     await this.transport.sendText(message.chatId, `✅ Removed custom mix *${key}*.`);
   }
 
+  private async handleAdminHealth(message: IncomingMessage, args: string[]): Promise<void> {
+    if (!this.isBotAdmin(message)) {
+      await this.transport.sendText(
+        message.chatId,
+        '🔐 Server health is restricted to configured bot administrators.',
+      );
+      return;
+    }
+
+    const startedAt = performance.now();
+    const health = this.healthSnapshot();
+    const memory = process.memoryUsage();
+    let databaseBytes: number | null = null;
+    let diskFreeBytes: number | null = null;
+
+    try {
+      databaseBytes = statSync(config.databasePath).size;
+    } catch {
+      // The database health result above remains the source of truth.
+    }
+
+    try {
+      const disk = statfsSync(dirname(config.databasePath));
+      diskFreeBytes = disk.bavail * disk.bsize;
+    } catch {
+      // Some platforms or filesystems do not provide statfs information.
+    }
+
+    const checkedAt = Date.now();
+    const full = args.some((arg) => ['full', 'details', 'verbose'].includes(arg.toLowerCase()));
+    const report = formatAdminHealthReport(
+      config.botName,
+      health,
+      {
+        checkedAt,
+        checkDurationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        connectionState: this.transport.connectionState,
+        maxConcurrentGames: config.maxConcurrentGames,
+        outboundQueue: this.transport.queueStats,
+        gameQueue: this.engine.queueStats,
+        reconnectAttempts: this.transport.reconnectAttemptCount,
+        rssBytes: memory.rss,
+        heapUsedBytes: memory.heapUsed,
+        heapTotalBytes: memory.heapTotal,
+        cpuAveragePercent: processCpuAveragePercent(),
+        loadAverage1m: oneMinuteLoadAverage(),
+        databaseBytes,
+        diskFreeBytes,
+        nodeVersion: process.version,
+        recentErrors: [...this.recentErrors],
+      },
+      config.timezone,
+      full,
+    );
+    await this.transport.sendText(message.chatId, report);
+  }
+
   private async canManageCurrentGame(message: IncomingMessage, player: Player): Promise<boolean> {
     const game = this.engine.gameForChat(message.chatId);
     if (!game) return true;
@@ -458,20 +530,29 @@ export class TriviaApplication {
     return config.botAdmins.has(message.senderId) || Boolean(message.senderPhoneId && config.botAdmins.has(message.senderPhoneId));
   }
 
-  private async sendHelp(chatId: string): Promise<void> {
+  private async sendHelp(message: IncomingMessage): Promise<void> {
+    const hintCommand = message.isGroup
+      ? ''
+      : `*/hint* — remove two wrong options (25% fewer points)\n`;
+    const adminCommand = this.isBotAdmin(message)
+      ? `*/health [full]* — private server diagnostics\n`
+      : '';
+
     await this.transport.sendText(
-      chatId,
+      message.chatId,
       `🎮 *${config.botName} commands*\n\n` +
         `*/play [category] [difficulty] [count]* — classic game\n` +
         `*/sprint* — fast 5-question game\n` +
         `*/daily* — one Daily Run per player\n` +
-        `*/hint* — private-game 50/50\n` +
+        hintCommand +
         `*/score* — current standings\n` +
         `*/stop* | */skip* — host/admin controls\n` +
         `*/leaderboard [group|global] [weekly]*\n` +
         `*/stats* | */achievements*\n` +
         `*/categories* | */settings*\n` +
-        `*/help* | */about* | */ping*\n\n` +
+        `*/help* | */about* | */ping*\n` +
+        adminCommand +
+        `\n` +
         `Examples: */play sports hard 10* or */play group:entertainment medium*`,
     );
   }
@@ -479,7 +560,7 @@ export class TriviaApplication {
   private async sendAbout(chatId: string): Promise<void> {
     await this.transport.sendText(
       chatId,
-      `ℹ️ *${config.botName} v3.0*\n` +
+      `ℹ️ *${config.botName} v3.1*\n` +
         `A concurrent WhatsApp trivia bot with durable group/global leaderboards, achievements, ` +
         `daily games and isolated server deployment.\n\n` +
         `It uses an unofficial WhatsApp Web connection, so use a dedicated number and avoid unsolicited messaging.`,
@@ -537,7 +618,10 @@ export class TriviaApplication {
   }
 
   private recordError(error: unknown, message: string, context?: IncomingMessage): void {
-    this.lastErrorAt = Date.now();
+    const at = Date.now();
+    this.lastErrorAt = at;
+    this.recentErrors.push({ at, label: message });
+    if (this.recentErrors.length > 5) this.recentErrors.shift();
     logger.error(
       {
         err: error,

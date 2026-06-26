@@ -67,7 +67,7 @@ The database also has a partial unique index that allows only one row with `stat
 - The host is the only participant.
 - A correct or wrong answer immediately closes the question.
 - Faster correct answers receive more points.
-- A private player can request one 50/50 hint per question. A hinted correct answer receives a 25% point penalty.
+- In one-player games, a player can remove two wrong options once per four-choice question. A hinted correct answer receives a 25% point penalty; hints are unavailable for two-choice questions.
 
 ### Group game
 
@@ -164,6 +164,12 @@ The transport is isolated from game logic. It provides:
 - no Chromium or Puppeteer process.
 
 The Baileys version is pinned exactly. Upgrade it deliberately, run the checks, then pair/test on a non-critical number before production rollout.
+
+## Administrative health reporting
+
+The same in-process health state used by the loopback HTTP endpoint is available through `/health` to numbers explicitly configured in `BOT_ADMINS`. The command adds process and operational diagnostics such as queue depths, memory, CPU average, database size, free disk space, reconnect attempts, and sanitized recent error labels. It does not execute shell commands or expose paths, hostnames, IP addresses, credentials, environment variables, or stack traces.
+
+`/health full` includes at most five in-memory error summaries. These entries are reset on process restart and are operational hints, not a replacement for the systemd journal. WhatsApp group administrators do not inherit server-level access.
 
 ## Server containment
 

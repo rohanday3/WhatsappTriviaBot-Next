@@ -11,7 +11,7 @@ const transport = process.env.NODE_ENV !== 'production' && process.stdout.isTTY
 export const logger = pino(
   {
     level: config.logLevel,
-    base: { service: 'whatsapp-trivia-next', version: '3.0.0' },
+    base: { service: 'whatsapp-trivia-next', version: '3.1.0' },
     redact: {
       paths: ['pairingCode', 'qr', 'auth', '*.advSecretKey', '*.noiseKey'],
       censor: '[REDACTED]',

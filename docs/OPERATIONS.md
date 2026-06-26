@@ -29,6 +29,22 @@ PAIRING_NUMBER=27821234567
 
 After the account is linked, credentials are stored inside `var/trivia.db`. Protect this file and its backups as secrets.
 
+## WhatsApp server administrators
+
+Add the administrators' own WhatsApp numbers to `/etc/whatsapp-trivia.env`:
+
+```env
+BOT_ADMINS=27821234567,27829876543
+```
+
+Use digits only, including the country code. Do not enter the bot's number unless that account should administer itself from another linked client. Restart after changing the list:
+
+```bash
+sudo systemctl restart whatsapp-trivia
+```
+
+Administrators can then send `/health` or `/health full` directly to the bot or inside a group. Group administrators are not automatically server administrators. The report intentionally excludes filesystem paths, hostnames, IP addresses, credentials, and stack traces.
+
 ## Routine commands
 
 ```bash

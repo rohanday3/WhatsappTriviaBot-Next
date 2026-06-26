@@ -10,13 +10,13 @@ A from-scratch WhatsApp trivia service designed for group chats, direct messages
 - **Per-group and global leaderboards**, including weekly views.
 - **Speed-based scoring**, difficulty multipliers, streaks, wins, accuracy, and best scores.
 - **Achievements** such as Fast Fingers, Flawless, and Champion.
-- **Private 50/50 hints** with a point penalty.
+- **Optional one-player hints** that remove two wrong options with a point penalty.
 - **Per-chat settings** for question count, timeout, difficulty, category, hints, and round standings.
 - **Custom category mixes** retained from the previous bot concept.
 - **Open Trivia DB** with a serialized request gate, cache, session token, and local fallback bank.
 - **SQLite persistence** for games, scores, settings, message deduplication, question history, and WhatsApp credentials.
 - **Restart recovery** for games that were open when the process stopped.
-- **Health endpoints and Prometheus-style metrics**.
+- **Health endpoints, Prometheus-style metrics, and an admin-only WhatsApp health report**.
 - **systemd and Docker isolation** with memory, CPU, process, filesystem, and restart limits.
 - **Automated backups, auth reset, and diagnostics**.
 
@@ -70,6 +70,7 @@ Then run `npm start` and enter the pairing code shown in the logs. The phone num
 /categories
 /settings
 /help
+/health [full]   # configured bot administrators only
 ```
 
 Examples:
@@ -137,6 +138,23 @@ curl http://127.0.0.1:8787/metrics
 - `/metrics` exposes connection, active-game, uptime, and memory gauges.
 
 Do not expose these endpoints publicly without authentication or a protected reverse proxy.
+
+### Health checks from WhatsApp
+
+Configure one or more trusted administrator numbers in `.env` or `/etc/whatsapp-trivia.env`:
+
+```env
+BOT_ADMINS=27821234567,27829876543
+```
+
+Use the administrators' own WhatsApp numbers, including the country code, with no `+`, spaces, or leading zero. Restart the service after changing the setting. A WhatsApp group administrator is **not** automatically a server administrator.
+
+```text
+/health
+/health full
+```
+
+`/health` reports readiness, WhatsApp and database state, active games, internal queue depth, uptime, memory, average CPU use, free disk space, reconnect attempts, and the last recorded error. `/health full` adds up to five sanitized error summaries and the Node.js runtime version. Paths, IP addresses, credentials, and stack traces are deliberately omitted.
 
 ## Backups
 

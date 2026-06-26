@@ -42,7 +42,7 @@ Each group participant can answer once per question. A second answer is rejected
 
 ### `/hint`
 
-Removes two wrong answers in a private game. A hinted correct answer is worth 25% fewer points. Hints are deliberately unavailable in groups.
+In a one-player chat, removes two wrong options from a four-choice question. A correct answer after using a hint is worth 25% fewer points. The command is hidden from group help, and it is unavailable for two-choice questions because it would reveal the answer.
 
 ## Game controls
 
@@ -152,7 +152,7 @@ Sets the default category.
 
 ### `/set hints <on|off>`
 
-Enables or disables private hints.
+Enables or disables hints for one-player games in this chat.
 
 ### `/set roundscores <on|off>`
 
@@ -165,6 +165,10 @@ Group settings require a WhatsApp group admin or configured bot admin.
 - `/help` or `/commands` — command summary.
 - `/about` — version and connection warning.
 - `/ping` — WhatsApp connection state and active game count.
+- `/health` — compact server-health report for configured bot administrators only.
+- `/health full` — the same report plus up to five sanitized recent error summaries.
+
+Server administrators are configured through `BOT_ADMINS`. WhatsApp group-admin status alone does not grant access. Unauthorized users receive no diagnostic details.
 
 ## Easter eggs retained from the previous bot
 

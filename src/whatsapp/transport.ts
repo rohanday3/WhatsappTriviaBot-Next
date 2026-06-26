@@ -38,6 +38,7 @@ export class WhatsAppTransport {
     private readonly db: Database,
     private readonly onMessage: (message: IncomingMessage) => Promise<void>,
     private readonly onStateChange: (state: ConnectionState) => void,
+    private readonly onOperationalError: (error: unknown, label: string) => void = () => undefined,
   ) {}
 
   get connectionState(): ConnectionState {
@@ -46,6 +47,14 @@ export class WhatsAppTransport {
 
   get connected(): boolean {
     return this.state === 'connected';
+  }
+
+  get queueStats(): { activeKeys: number; pendingTasks: number; maxDepth: number } {
+    return this.sendQueue.stats;
+  }
+
+  get reconnectAttemptCount(): number {
+    return this.reconnectAttempts;
   }
 
   async start(): Promise<void> {
@@ -139,6 +148,7 @@ export class WhatsAppTransport {
           } catch (error) {
             this.pairingRequested = false;
             logger.error({ err: error }, 'Could not request pairing code');
+            this.onOperationalError(error, 'Could not request WhatsApp pairing code');
           }
         }
       }
@@ -155,9 +165,11 @@ export class WhatsAppTransport {
         if (statusCode === DisconnectReason.loggedOut) {
           this.setState('logged_out');
           logger.error('WhatsApp session logged out. Clear auth tables or use a fresh database to pair again.');
+          this.onOperationalError(lastDisconnect?.error, 'WhatsApp session logged out');
           return;
         }
         this.setState('disconnected');
+        this.onOperationalError(lastDisconnect?.error, `WhatsApp connection closed${statusCode ? ` (code ${statusCode})` : ''}`);
         if (!this.stopped) this.scheduleReconnect(statusCode);
       }
     });
@@ -195,6 +207,7 @@ export class WhatsAppTransport {
       if (!this.stopped && this.state !== 'connected') {
         void this.connect().catch((error) => {
           logger.error({ err: error }, 'Reconnect attempt failed');
+          this.onOperationalError(error, 'WhatsApp reconnect attempt failed');
           this.scheduleReconnect(undefined);
         });
       }
