@@ -1,0 +1,607 @@
+import { randomInt } from 'node:crypto';
+import { config } from './config.js';
+import { Database } from './db/database.js';
+import { Repository } from './db/repository.js';
+import { ACHIEVEMENTS } from './game/achievements.js';
+import { GameEngine } from './game/game-engine.js';
+import { HealthServer } from './http/health-server.js';
+import { logger } from './logger.js';
+import type { ChatSettings, Difficulty, HealthSnapshot, IncomingMessage, PlayOptions, Player } from './types.js';
+import { categoryByKey, CATEGORIES, CATEGORY_GROUPS } from './trivia/catalog.js';
+import { QuestionProvider } from './trivia/question-provider.js';
+import { localDateKey, startOfWeekMs } from './util/date.js';
+import { clamp, percentage } from './util/text.js';
+import { WhatsAppTransport, type ConnectionState } from './whatsapp/transport.js';
+
+export class TriviaApplication {
+  private readonly db = new Database(config.databasePath);
+  private readonly repository = new Repository(this.db);
+  private readonly provider = new QuestionProvider();
+  private readonly transport: WhatsAppTransport;
+  private readonly engine: GameEngine;
+  private readonly healthServer: HealthServer;
+  private readonly commandCooldowns = new Map<string, number>();
+  private whatsappState: ConnectionState = 'starting';
+  private databaseReady = true;
+  private lastMessageAt: number | null = null;
+  private lastErrorAt: number | null = null;
+  private cleanupTimer: NodeJS.Timeout | null = null;
+  private stopping = false;
+
+  constructor() {
+    this.transport = new WhatsAppTransport(
+      this.db,
+      (message) => this.handleMessage(message),
+      (state) => this.handleConnectionState(state),
+    );
+    this.engine = new GameEngine(
+      this.repository,
+      this.provider,
+      (chatId, text) => this.transport.sendText(chatId, text),
+    );
+    this.healthServer = new HealthServer(() => this.healthSnapshot());
+  }
+
+  async start(): Promise<void> {
+    await this.provider.initialize();
+    this.engine.initialize();
+    await this.healthServer.start();
+    this.cleanupTimer = setInterval(() => {
+      try {
+        this.repository.db.pruneOperationalData();
+        this.repository.db.checkpoint();
+      } catch (error) {
+        this.recordError(error, 'Periodic database maintenance failed');
+      }
+    }, 60 * 60 * 1000);
+    this.cleanupTimer.unref();
+    await this.transport.start();
+  }
+
+  async stop(): Promise<void> {
+    if (this.stopping) return;
+    this.stopping = true;
+    if (this.cleanupTimer) clearInterval(this.cleanupTimer);
+    await this.transport.stop();
+    await this.healthServer.stop();
+    this.db.close();
+  }
+
+  healthSnapshot(): HealthSnapshot {
+    const whatsappConnected = this.transport.connected;
+    const databaseReady = this.databaseReady && this.db.isHealthy();
+    return {
+      live: !this.stopping,
+      ready: !this.stopping && databaseReady && whatsappConnected,
+      whatsappConnected,
+      databaseReady,
+      activeGames: this.engine.activeGameCount,
+      uptimeSeconds: Math.floor(process.uptime()),
+      lastMessageAt: this.lastMessageAt,
+      lastErrorAt: this.lastErrorAt,
+    };
+  }
+
+  private async handleMessage(message: IncomingMessage): Promise<void> {
+    this.lastMessageAt = Date.now();
+    if (this.repository.isMessageProcessed(message.messageId, message.timestampMs)) return;
+    this.repository.touchChat(message.chatId, message.isGroup);
+    const player = this.repository.upsertPlayer(
+      message.senderId,
+      message.senderPhoneId,
+      message.pushName,
+    );
+
+    try {
+      const text = message.text.trim();
+      const lower = text.toLowerCase();
+      if (lower === 'red pill' || lower === 'redpill') {
+        await this.sendRedPill(message.chatId);
+        return;
+      }
+      if (lower === 'blue pill' || lower === 'bluepill') {
+        await this.sendBluePill(message.chatId);
+        return;
+      }
+
+      if (!text.startsWith(config.commandPrefix)) {
+        await this.engine.answer(message.chatId, player, text);
+        return;
+      }
+
+      const [rawCommand = '', ...args] = text.slice(config.commandPrefix.length).trim().split(/\s+/);
+      const command = rawCommand.toLowerCase();
+      if (!command) return;
+      if (!this.consumeCooldown(`${player.id}:${command}`, command === 'play' ? 3500 : 1000)) return;
+
+      switch (command) {
+        case 'play':
+        case 'start':
+          await this.handlePlay(message, player, args, 'classic');
+          break;
+        case 'sprint':
+          await this.handlePlay(message, player, args, 'sprint');
+          break;
+        case 'daily':
+          await this.handlePlay(message, player, args, 'daily');
+          break;
+        case 'stop':
+          await this.handleStop(message, player);
+          break;
+        case 'skip':
+        case 'next':
+          await this.handleSkip(message, player);
+          break;
+        case 'hint':
+          await this.engine.hint(message.chatId, player);
+          break;
+        case 'score':
+          await this.handleScore(message.chatId);
+          break;
+        case 'leaderboard':
+        case 'top':
+          await this.handleLeaderboard(message, args);
+          break;
+        case 'stats':
+        case 'profile':
+          await this.handleStats(message.chatId, player);
+          break;
+        case 'achievements':
+        case 'badges':
+          await this.handleAchievements(message.chatId, player);
+          break;
+        case 'categories':
+          await this.handleCategories(message.chatId);
+          break;
+        case 'settings':
+          await this.handleSettings(message.chatId);
+          break;
+        case 'set':
+          await this.handleSet(message, player, args);
+          break;
+        case 'addgroup':
+          await this.handleAddGroup(message, player, text);
+          break;
+        case 'removegroup':
+          await this.handleRemoveGroup(message, player, args);
+          break;
+        case 'help':
+        case 'commands':
+          await this.sendHelp(message.chatId);
+          break;
+        case 'about':
+          await this.sendAbout(message.chatId);
+          break;
+        case 'ping':
+          await this.transport.sendText(
+            message.chatId,
+            `🏓 Pong — WhatsApp: *${this.transport.connectionState}*, games: *${this.engine.activeGameCount}*`,
+          );
+          break;
+        case 'egg':
+          await this.sendEgg(message.chatId);
+          break;
+        case 'glitch':
+          await this.sendGlitch(message.chatId);
+          break;
+        default:
+          if (!message.isGroup) {
+            await this.transport.sendText(message.chatId, `Unknown command. Type *${config.commandPrefix}help*.`);
+          }
+      }
+    } catch (error) {
+      this.recordError(error, 'Message processing failed', message);
+      try {
+        await this.transport.sendText(
+          message.chatId,
+          '⚠️ Something went wrong with that action. The bot is still running; please try again.',
+        );
+      } catch (sendError) {
+        this.recordError(sendError, 'Could not send command error message', message);
+      }
+    }
+  }
+
+  private async handlePlay(
+    message: IncomingMessage,
+    player: Player,
+    args: string[],
+    forcedMode: PlayOptions['mode'],
+  ): Promise<void> {
+    if (forcedMode === 'daily' && message.isGroup) {
+      await this.transport.sendText(message.chatId, '📅 Daily Run is a personal challenge. Message the bot directly and use */daily*.');
+      return;
+    }
+    const settings = this.repository.getSettings(message.chatId);
+    const options = parsePlayOptions(args, settings, forcedMode);
+    await this.engine.startGame(
+      message.chatId,
+      message.isGroup,
+      player,
+      options,
+      forcedMode === 'daily' ? localDateKey(new Date(), config.timezone) : undefined,
+    );
+  }
+
+  private async handleStop(message: IncomingMessage, player: Player): Promise<void> {
+    if (!(await this.canManageCurrentGame(message, player))) {
+      await this.transport.sendText(message.chatId, '🔐 Only the game host or a group admin can stop this game.');
+      return;
+    }
+    if (!(await this.engine.stopGame(message.chatId))) {
+      await this.transport.sendText(message.chatId, 'There is no active game to stop.');
+    }
+  }
+
+  private async handleSkip(message: IncomingMessage, player: Player): Promise<void> {
+    if (!(await this.canManageCurrentGame(message, player))) {
+      await this.transport.sendText(message.chatId, '🔐 Only the game host or a group admin can skip a question.');
+      return;
+    }
+    if (!(await this.engine.skipQuestion(message.chatId))) {
+      await this.transport.sendText(message.chatId, 'There is no open question to skip.');
+    }
+  }
+
+  private async handleScore(chatId: string): Promise<void> {
+    const score = this.engine.currentScore(chatId);
+    await this.transport.sendText(chatId, score ?? '📊 There is no active game here.');
+  }
+
+  private async handleLeaderboard(message: IncomingMessage, args: string[]): Promise<void> {
+    const normalized = args.map((arg) => arg.toLowerCase());
+    const scope = normalized.includes('global') ? 'global' : normalized.includes('group') || normalized.includes('chat')
+      ? 'chat'
+      : message.isGroup
+        ? 'chat'
+        : 'global';
+    const weekly = normalized.includes('weekly') || normalized.includes('week');
+    const entries = this.repository.leaderboard(
+      scope,
+      message.chatId,
+      weekly ? startOfWeekMs(new Date(), config.timezone) : undefined,
+    );
+    if (!entries.length) {
+      await this.transport.sendText(message.chatId, '🏆 No scores yet. Start the first game with */play*.');
+      return;
+    }
+    const title = `🏆 *${weekly ? 'Weekly ' : ''}${scope === 'global' ? 'Global' : 'Group'} leaderboard*`;
+    const lines = entries.map((entry, index) => {
+      const medal = ['🥇', '🥈', '🥉'][index] ?? `${index + 1}.`;
+      return `${medal} ${entry.name} — *${entry.points} pts* (${percentage(entry.correct, entry.answered)})`;
+    });
+    await this.transport.sendText(message.chatId, `${title}\n\n${lines.join('\n')}`);
+  }
+
+  private async handleStats(chatId: string, player: Player): Promise<void> {
+    const stats = this.repository.playerStats(player.id, chatId);
+    if (!stats) return;
+    await this.transport.sendText(
+      chatId,
+      `👤 *${stats.display_name}*\n\n` +
+        `🌍 Total points: *${stats.total_points}*\n` +
+        `🎮 Games: *${stats.games_played}* | Wins: *${stats.games_won}*\n` +
+        `✅ Accuracy: *${percentage(Number(stats.correct_answers), Number(stats.questions_answered))}*\n` +
+        `🔥 Current streak: *${stats.current_streak}* | Best: *${stats.best_streak}*\n` +
+        `⭐ Best game: *${stats.best_game_score}*\n\n` +
+        `💬 This chat: *${stats.chat_points} pts* across *${stats.chat_games} games*`,
+    );
+  }
+
+  private async handleAchievements(chatId: string, player: Player): Promise<void> {
+    const unlocked = new Map(this.repository.achievements(player.id).map((item) => [item.key, item]));
+    const lines = Object.entries(ACHIEVEMENTS).map(([key, item]) =>
+      unlocked.has(key)
+        ? `✅ ${item.icon} *${item.name}* — ${item.description}`
+        : `🔒 ${item.icon} ${item.name} — ${item.description}`,
+    );
+    await this.transport.sendText(chatId, `🏅 *Achievements*\n\n${lines.join('\n')}`);
+  }
+
+  private async handleCategories(chatId: string): Promise<void> {
+    const settings = this.repository.getSettings(chatId);
+    const categories = CATEGORIES.map((item) => `• *${item.key}* — ${item.name}`).join('\n');
+    const builtIn = Object.entries(CATEGORY_GROUPS)
+      .map(([key, group]) => `• *group:${key}* — ${group.name}`)
+      .join('\n');
+    const custom = Object.entries(settings.customGroups)
+      .map(([key, group]) => `• *group:${key}* — ${group.name} (custom)`)
+      .join('\n');
+    await this.transport.sendText(
+      chatId,
+      `🗂️ *Categories*\n${categories}\n\n🎛️ *Mixes*\n${builtIn}` +
+        `${custom ? `\n${custom}` : ''}` +
+        `\n\nExamples:\n*/play sports hard 10*\n*/play group:entertainment medium*`,
+    );
+  }
+
+  private async handleSettings(chatId: string): Promise<void> {
+    const settings = this.repository.getSettings(chatId);
+    await this.transport.sendText(
+      chatId,
+      `⚙️ *Chat settings*\n\n` +
+        `Questions: *${settings.questionsPerGame}*\n` +
+        `Timeout: *${settings.timeoutSeconds}s*\n` +
+        `Reveal delay: *${settings.revealDelayMs}ms*\n` +
+        `Difficulty: *${settings.defaultDifficulty}*\n` +
+        `Category: *${settings.defaultCategory ?? 'mixed'}*\n` +
+        `Hints: *${settings.hintsEnabled ? 'on' : 'off'}*\n` +
+        `Round standings: *${settings.showRoundLeaderboard ? 'on' : 'off'}*\n\n` +
+        `Change with */set questions 10*, */set timeout 25*, */set difficulty hard*, ` +
+        `*/set category sports*, */set hints off* or */set roundscores off*.` ,
+    );
+  }
+
+  private async handleSet(message: IncomingMessage, player: Player, args: string[]): Promise<void> {
+    if (!(await this.canManageSettings(message, player))) {
+      await this.transport.sendText(message.chatId, '🔐 Only a group admin can change group settings.');
+      return;
+    }
+    const [fieldRaw, valueRaw] = args;
+    if (!fieldRaw || !valueRaw) {
+      await this.transport.sendText(message.chatId, 'Usage: */set <questions|timeout|difficulty|category|hints|roundscores> <value>*');
+      return;
+    }
+    const field = fieldRaw.toLowerCase();
+    const value = valueRaw.toLowerCase();
+    const settings = this.repository.getSettings(message.chatId);
+    try {
+      switch (field) {
+        case 'questions': {
+          const parsed = Number.parseInt(value, 10);
+          if (!Number.isFinite(parsed)) throw new Error('Questions must be a number');
+          settings.questionsPerGame = clamp(parsed, 3, 30);
+          break;
+        }
+        case 'timeout': {
+          const parsed = Number.parseInt(value, 10);
+          if (!Number.isFinite(parsed)) throw new Error('Timeout must be a number');
+          settings.timeoutSeconds = clamp(parsed, 8, 90);
+          break;
+        }
+        case 'delay':
+        case 'revealdelay': {
+          const parsed = Number.parseInt(value, 10);
+          if (!Number.isFinite(parsed)) throw new Error('Delay must be a number');
+          settings.revealDelayMs = clamp(parsed, 500, 10_000);
+          break;
+        }
+        case 'difficulty':
+          if (!isDifficulty(value)) throw new Error('Difficulty must be mixed, easy, medium or hard');
+          settings.defaultDifficulty = value;
+          break;
+        case 'category':
+          if (value === 'mixed' || value === 'any') settings.defaultCategory = null;
+          else {
+            const category = categoryByKey(value);
+            if (!category) throw new Error('Unknown category. Use /categories');
+            settings.defaultCategory = category.key;
+          }
+          break;
+        case 'hints':
+          settings.hintsEnabled = parseOnOff(value);
+          break;
+        case 'roundscores':
+        case 'roundstandings':
+          settings.showRoundLeaderboard = parseOnOff(value);
+          break;
+        default:
+          throw new Error('Unknown setting');
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Invalid setting';
+      await this.transport.sendText(message.chatId, `❌ ${detail}`);
+      return;
+    }
+    this.repository.saveSettings(message.chatId, settings);
+    await this.transport.sendText(message.chatId, `✅ Updated *${field}* to *${value}*.`);
+  }
+
+  private async handleAddGroup(message: IncomingMessage, player: Player, rawText: string): Promise<void> {
+    if (!(await this.canManageSettings(message, player))) {
+      await this.transport.sendText(message.chatId, '🔐 Only a group admin can edit category mixes.');
+      return;
+    }
+    const prefix = escapeRegExp(config.commandPrefix);
+    const match = rawText.match(new RegExp(`^${prefix}addgroup\\s+([a-z0-9_-]+)\\s+(?:"([^"]+)"|(\\S+))\\s+(.+)$`, 'i'));
+    if (!match) {
+      await this.transport.sendText(
+        message.chatId,
+        'Usage: */addgroup <key> "<name>" category1,category2*\nExample: */addgroup mymix "My Mix" film,music,sports*',
+      );
+      return;
+    }
+    const key = match[1]!.toLowerCase();
+    const name = (match[2] ?? match[3])!.trim();
+    const requested = match[4]!.split(',').map((item) => item.trim()).filter(Boolean);
+    const categories = requested.map(categoryByKey).filter(Boolean).map((item) => item!.key);
+    if (!categories.length) throw new Error('No valid categories were supplied');
+    const settings = this.repository.getSettings(message.chatId);
+    settings.customGroups[key] = { name, categories: [...new Set(categories)] };
+    this.repository.saveSettings(message.chatId, settings);
+    await this.transport.sendText(message.chatId, `✅ Created *${name}*. Use */play group:${key}*.`);
+  }
+
+  private async handleRemoveGroup(message: IncomingMessage, player: Player, args: string[]): Promise<void> {
+    if (!(await this.canManageSettings(message, player))) {
+      await this.transport.sendText(message.chatId, '🔐 Only a group admin can edit category mixes.');
+      return;
+    }
+    const key = args[0]?.toLowerCase();
+    if (!key) {
+      await this.transport.sendText(message.chatId, 'Usage: */removegroup <key>*');
+      return;
+    }
+    const settings = this.repository.getSettings(message.chatId);
+    if (!settings.customGroups[key]) {
+      await this.transport.sendText(message.chatId, `No custom category mix called *${key}* exists.`);
+      return;
+    }
+    delete settings.customGroups[key];
+    this.repository.saveSettings(message.chatId, settings);
+    await this.transport.sendText(message.chatId, `✅ Removed custom mix *${key}*.`);
+  }
+
+  private async canManageCurrentGame(message: IncomingMessage, player: Player): Promise<boolean> {
+    const game = this.engine.gameForChat(message.chatId);
+    if (!game) return true;
+    if (!message.isGroup || game.hostPlayerId === player.id || this.isBotAdmin(message)) return true;
+    return this.transport.isGroupAdmin(message.chatId, message.senderId, message.senderPhoneId);
+  }
+
+  private async canManageSettings(message: IncomingMessage, _player: Player): Promise<boolean> {
+    if (!message.isGroup || this.isBotAdmin(message)) return true;
+    return this.transport.isGroupAdmin(message.chatId, message.senderId, message.senderPhoneId);
+  }
+
+  private isBotAdmin(message: IncomingMessage): boolean {
+    return config.botAdmins.has(message.senderId) || Boolean(message.senderPhoneId && config.botAdmins.has(message.senderPhoneId));
+  }
+
+  private async sendHelp(chatId: string): Promise<void> {
+    await this.transport.sendText(
+      chatId,
+      `🎮 *${config.botName} commands*\n\n` +
+        `*/play [category] [difficulty] [count]* — classic game\n` +
+        `*/sprint* — fast 5-question game\n` +
+        `*/daily* — one Daily Run per player\n` +
+        `*/hint* — private-game 50/50\n` +
+        `*/score* — current standings\n` +
+        `*/stop* | */skip* — host/admin controls\n` +
+        `*/leaderboard [group|global] [weekly]*\n` +
+        `*/stats* | */achievements*\n` +
+        `*/categories* | */settings*\n` +
+        `*/help* | */about* | */ping*\n\n` +
+        `Examples: */play sports hard 10* or */play group:entertainment medium*`,
+    );
+  }
+
+  private async sendAbout(chatId: string): Promise<void> {
+    await this.transport.sendText(
+      chatId,
+      `ℹ️ *${config.botName} v3.0*\n` +
+        `A concurrent WhatsApp trivia bot with durable group/global leaderboards, achievements, ` +
+        `daily games and isolated server deployment.\n\n` +
+        `It uses an unofficial WhatsApp Web connection, so use a dedicated number and avoid unsolicited messaging.`,
+    );
+  }
+
+  private async sendEgg(chatId: string): Promise<void> {
+    await this.transport.sendText(
+      chatId,
+      '🕶️ *Wake up, Neo…*\nThe Matrix has you.\nFollow the white rabbit.\n\n💊 Reply with *red pill* or *blue pill*.',
+    );
+  }
+
+  private async sendRedPill(chatId: string): Promise<void> {
+    await this.transport.sendText(
+      chatId,
+      '💊🔴 *You chose the red pill.*\nReality dissolves into green code.\n🕶️ You can now see the truth behind every trivia question.\n\nType */play* to test your abilities.',
+    );
+  }
+
+  private async sendBluePill(chatId: string): Promise<void> {
+    await this.transport.sendText(
+      chatId,
+      '💊🔵 *You chose the blue pill.*\nYou wake up in bed. Everything seems normal… except your phone says: “Want to play trivia?”\n\nType */play*.',
+    );
+  }
+
+  private async sendGlitch(chatId: string): Promise<void> {
+    await this.transport.sendText(
+      chatId,
+      '⚠️ `SYSTEM ANOMALY DETECTED`\n`ERROR: REALITY.MATRIX CORRUPTED`\n👤 Agent Smith detected\n🏃 Run */play* to escape\n🐇 Follow */egg* for answers',
+    );
+  }
+
+  private handleConnectionState(state: ConnectionState): void {
+    this.whatsappState = state;
+    if (state === 'connected') {
+      void this.engine.resumeRecoveredGames().catch((error) => {
+        this.recordError(error, 'Could not resume recovered games');
+      });
+    }
+  }
+
+  private consumeCooldown(key: string, durationMs: number): boolean {
+    const now = Date.now();
+    const until = this.commandCooldowns.get(key) ?? 0;
+    if (until > now) return false;
+    this.commandCooldowns.set(key, now + durationMs);
+    if (this.commandCooldowns.size > 10_000) {
+      for (const [item, expiry] of this.commandCooldowns) {
+        if (expiry <= now) this.commandCooldowns.delete(item);
+      }
+    }
+    return true;
+  }
+
+  private recordError(error: unknown, message: string, context?: IncomingMessage): void {
+    this.lastErrorAt = Date.now();
+    logger.error(
+      {
+        err: error,
+        ...(context ? { chatId: context.chatId, messageId: context.messageId, senderId: context.senderId } : {}),
+      },
+      message,
+    );
+  }
+}
+
+function parsePlayOptions(
+  args: string[],
+  settings: ChatSettings,
+  forcedMode: PlayOptions['mode'],
+): PlayOptions {
+  let mode = forcedMode;
+  let questions = forcedMode === 'daily' || forcedMode === 'sprint' ? 5 : settings.questionsPerGame;
+  let difficulty = settings.defaultDifficulty;
+  let category = settings.defaultCategory;
+  const groups = { ...CATEGORY_GROUPS, ...settings.customGroups };
+
+  for (const original of args) {
+    const token = original.toLowerCase();
+    if (token === 'sprint' || token === 'daily' || token === 'classic') {
+      mode = token;
+      if (token === 'sprint' || token === 'daily') questions = 5;
+      continue;
+    }
+    if (isDifficulty(token)) {
+      difficulty = token;
+      continue;
+    }
+    const numeric = Number.parseInt(token, 10);
+    if (/^\d+$/.test(token) && Number.isFinite(numeric) && mode !== 'daily') {
+      questions = clamp(numeric, 3, 30);
+      continue;
+    }
+    const groupKey = token.startsWith('group:') ? token.slice(6) : null;
+    if (groupKey && groups[groupKey]?.categories.length) {
+      const choices = groups[groupKey]!.categories;
+      category = choices[randomInt(choices.length)] ?? null;
+      continue;
+    }
+    const matchedCategory = categoryByKey(token);
+    if (matchedCategory) category = matchedCategory.key;
+  }
+  if (mode === 'daily') {
+    questions = 5;
+    difficulty = 'mixed';
+    category = null;
+  }
+  return { mode, questions, difficulty, category };
+}
+
+function isDifficulty(value: string): value is Difficulty {
+  return value === 'mixed' || value === 'easy' || value === 'medium' || value === 'hard';
+}
+
+function parseOnOff(value: string): boolean {
+  if (['on', 'true', 'yes', '1'].includes(value)) return true;
+  if (['off', 'false', 'no', '0'].includes(value)) return false;
+  throw new Error('Value must be on or off');
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}

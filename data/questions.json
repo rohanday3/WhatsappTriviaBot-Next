@@ -1,0 +1,226 @@
+[
+  {
+    "id": 1,
+    "category": "General Knowledge",
+    "difficulty": "easy",
+    "question": "What is the capital of France?",
+    "options": ["London", "Paris", "Berlin", "Madrid"],
+    "correct": 1
+  },
+  {
+    "id": 2,
+    "category": "General Knowledge",
+    "difficulty": "easy",
+    "question": "Which planet is known as the Red Planet?",
+    "options": ["Venus", "Mars", "Jupiter", "Saturn"],
+    "correct": 1
+  },
+  {
+    "id": 3,
+    "category": "General Knowledge",
+    "difficulty": "medium",
+    "question": "What is the largest ocean on Earth?",
+    "options": ["Atlantic", "Indian", "Arctic", "Pacific"],
+    "correct": 3
+  },
+  {
+    "id": 4,
+    "category": "General Knowledge",
+    "difficulty": "hard",
+    "question": "Which element has the chemical symbol 'Au'?",
+    "options": ["Silver", "Gold", "Aluminum", "Argon"],
+    "correct": 1
+  },
+  {
+    "id": 5,
+    "category": "Sports",
+    "difficulty": "easy",
+    "question": "How many players are in a basketball team on the court?",
+    "options": ["4", "5", "6", "7"],
+    "correct": 1
+  },
+  {
+    "id": 6,
+    "category": "Sports",
+    "difficulty": "medium",
+    "question": "Which sport is known as 'The Beautiful Game'?",
+    "options": ["Cricket", "Tennis", "Football", "Baseball"],
+    "correct": 2
+  },
+  {
+    "id": 7,
+    "category": "Sports",
+    "difficulty": "medium",
+    "question": "In which sport would you perform a 'slam dunk'?",
+    "options": ["Tennis", "Basketball", "Volleyball", "Badminton"],
+    "correct": 1
+  },
+  {
+    "id": 8,
+    "category": "Sports",
+    "difficulty": "hard",
+    "question": "How many Grand Slam tournaments are there in tennis?",
+    "options": ["2", "3", "4", "5"],
+    "correct": 2
+  },
+  {
+    "id": 9,
+    "category": "Movies",
+    "difficulty": "easy",
+    "question": "Who directed 'Titanic'?",
+    "options": ["Steven Spielberg", "James Cameron", "Martin Scorsese", "Quentin Tarantino"],
+    "correct": 1
+  },
+  {
+    "id": 10,
+    "category": "Movies",
+    "difficulty": "medium",
+    "question": "In what year was 'Avatar' released?",
+    "options": ["2008", "2009", "2010", "2011"],
+    "correct": 1
+  },
+  {
+    "id": 11,
+    "category": "Movies",
+    "difficulty": "medium",
+    "question": "Which actor plays Iron Man in the MCU?",
+    "options": ["Chris Evans", "Robert Downey Jr.", "Chris Hemsworth", "Mark Ruffalo"],
+    "correct": 1
+  },
+  {
+    "id": 12,
+    "category": "Movies",
+    "difficulty": "hard",
+    "question": "Who won the Academy Award for Best Actor in 2020?",
+    "options": ["Joaquin Phoenix", "Adam Driver", "Leonardo DiCaprio", "Tom Hanks"],
+    "correct": 0
+  },
+  {
+    "id": 13,
+    "category": "Science",
+    "difficulty": "easy",
+    "question": "How many bones does an adult human have?",
+    "options": ["186", "206", "216", "226"],
+    "correct": 1
+  },
+  {
+    "id": 14,
+    "category": "Science",
+    "difficulty": "medium",
+    "question": "What is the chemical formula for water?",
+    "options": ["CO2", "H2O", "O2", "NaCl"],
+    "correct": 1
+  },
+  {
+    "id": 15,
+    "category": "Science",
+    "difficulty": "medium",
+    "question": "Which gas do plants absorb from the atmosphere?",
+    "options": ["Oxygen", "Nitrogen", "Carbon Dioxide", "Hydrogen"],
+    "correct": 2
+  },
+  {
+    "id": 16,
+    "category": "Science",
+    "difficulty": "hard",
+    "question": "What is the speed of light in vacuum?",
+    "options": ["300,000 km/s", "250,000 km/s", "350,000 km/s", "200,000 km/s"],
+    "correct": 0
+  },
+  {
+    "id": 17,
+    "category": "History",
+    "difficulty": "easy",
+    "question": "In which year did World War II end?",
+    "options": ["1943", "1944", "1945", "1946"],
+    "correct": 2
+  },
+  {
+    "id": 18,
+    "category": "History",
+    "difficulty": "medium",
+    "question": "Who was the first President of the United States?",
+    "options": ["Thomas Jefferson", "George Washington", "John Adams", "James Madison"],
+    "correct": 1
+  },
+  {
+    "id": 19,
+    "category": "History",
+    "difficulty": "medium",
+    "question": "In what year did the Titanic sink?",
+    "options": ["1910", "1911", "1912", "1913"],
+    "correct": 2
+  },
+  {
+    "id": 20,
+    "category": "History",
+    "difficulty": "hard",
+    "question": "Which ancient wonder of the world still stands today?",
+    "options": ["Colossus of Rhodes", "Great Pyramid of Giza", "Hanging Gardens", "Lighthouse of Alexandria"],
+    "correct": 1
+  },
+  {
+    "id": 21,
+    "category": "Geography",
+    "difficulty": "easy",
+    "question": "What is the smallest country in the world?",
+    "options": ["Monaco", "San Marino", "Vatican City", "Liechtenstein"],
+    "correct": 2
+  },
+  {
+    "id": 22,
+    "category": "Geography",
+    "difficulty": "medium",
+    "question": "Which is the longest river in the world?",
+    "options": ["Amazon", "Mississippi", "Nile", "Yangtze"],
+    "correct": 2
+  },
+  {
+    "id": 23,
+    "category": "Geography",
+    "difficulty": "medium",
+    "question": "What is the capital of Australia?",
+    "options": ["Sydney", "Melbourne", "Canberra", "Brisbane"],
+    "correct": 2
+  },
+  {
+    "id": 24,
+    "category": "Geography",
+    "difficulty": "hard",
+    "question": "Which mountain range is the longest in the world?",
+    "options": ["Himalayas", "Rocky Mountains", "Andes", "Alps"],
+    "correct": 2
+  },
+  {
+    "id": 25,
+    "category": "Technology",
+    "difficulty": "easy",
+    "question": "Who invented the World Wide Web?",
+    "options": ["Steve Jobs", "Bill Gates", "Tim Berners-Lee", "Mark Zuckerberg"],
+    "correct": 2
+  },
+  {
+    "id": 26,
+    "category": "Technology",
+    "difficulty": "medium",
+    "question": "In what year was the first iPhone released?",
+    "options": ["2005", "2006", "2007", "2008"],
+    "correct": 2
+  },
+  {
+    "id": 27,
+    "category": "Technology",
+    "difficulty": "medium",
+    "question": "What does HTML stand for?",
+    "options": ["Hyper Text Markup Language", "High Tech Modern Language", "Home Tool Markup Language", "Hyperlinks and Text Markup Language"],
+    "correct": 0
+  },
+  {
+    "id": 28,
+    "category": "Technology",
+    "difficulty": "hard",
+    "question": "Who is known as the 'father of computers'?",
+    "options": ["Alan Turing", "Charles Babbage", "Grace Hopper", "Ada Lovelace"],
+    "correct": 1
+  }
+]

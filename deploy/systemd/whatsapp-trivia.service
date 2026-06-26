@@ -1,0 +1,50 @@
+[Unit]
+Description=WhatsApp Trivia Next
+Documentation=file:///opt/whatsapp-trivia/README.md
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=whatsapp-trivia
+Group=whatsapp-trivia
+WorkingDirectory=/opt/whatsapp-trivia
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/whatsapp-trivia.env
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning /opt/whatsapp-trivia/dist/index.js
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=20s
+KillSignal=SIGTERM
+
+# Resource isolation: the bot cannot consume the whole server.
+MemoryHigh=300M
+MemoryMax=384M
+CPUQuota=50%
+TasksMax=64
+LimitNOFILE=4096
+OOMPolicy=stop
+
+# Filesystem and privilege hardening.
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/whatsapp-trivia/var
+UMask=0077
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
