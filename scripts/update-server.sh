@@ -83,7 +83,7 @@ if ! id "${SERVICE_USER}" >/dev/null 2>&1; then
   exit 1
 fi
 
-install -d -m 0700 -o root -g root "${UPDATE_CACHE_DIR}"
+install -d -m 0711 -o root -g root "${UPDATE_CACHE_DIR}"
 lock_file="/run/lock/${SERVICE_NAME}-update.lock"
 exec 9>"${lock_file}"
 if ! flock -n 9; then

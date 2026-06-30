@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.3.1
+
+- Fixed `update-whatsapp-trivia` validation failing with `Permission denied` when the unprivileged service account entered the temporary staging directory.
+- Kept the updater cache root-owned and non-listable while allowing traversal only (`0711`) to service-owned staging directories.
+
 ## 3.3.0
 
 - Added `sudo update-whatsapp-trivia` for one-command Git fetch, validation, backup, deployment, and systemd restart.
