@@ -149,11 +149,55 @@ Test account linking, direct messages, group sender identity, group-admin permis
 
 ## Updating a systemd installation
 
-Run the installer again from the new source tree. It preserves `/etc/whatsapp-trivia.env` and the installed `var` directory.
+### Configure repository updates once
+
+A first installation run from a Git clone detects its `origin` URL and current branch automatically. A ZIP-based installation needs the repository configured once:
 
 ```bash
-sudo ./scripts/install-systemd.sh
+cd /path/to/WhatsappTriviaBot-Next
+sudo ./scripts/install-updater.sh https://github.com/OWNER/REPOSITORY.git main
 ```
+
+The root account must be able to fetch the repository non-interactively. Use a read-only deploy key for a private repository.
+
+The updater configuration is stored in `/etc/whatsapp-trivia-update.env` with root-only permissions. Runtime secrets remain separately stored in `/etc/whatsapp-trivia.env`.
+
+### Update and restart
+
+```bash
+sudo update-whatsapp-trivia
+```
+
+The command:
+
+1. takes an exclusive lock so two updates cannot overlap;
+2. fetches the configured branch into `/var/cache/whatsapp-trivia-updater`;
+3. exports the exact remote commit into a clean temporary directory;
+4. runs `npm ci` and the complete `npm run check` suite as the unprivileged service account;
+5. creates a consistent SQLite backup when a database already exists;
+6. deploys through `install-systemd.sh`, preserving the runtime environment and `var` data;
+7. refreshes the systemd unit and updater command; and
+8. restarts only `whatsapp-trivia.service` and verifies that it is active.
+
+If validation fails, the production installation is not changed and the service is not restarted.
+
+Useful options:
+
+```bash
+sudo update-whatsapp-trivia --check  # validate the latest remote commit only
+sudo update-whatsapp-trivia --force  # redeploy the current remote commit
+```
+
+When the installed `.deployed-commit` already matches the remote branch, a normal update exits without unnecessarily restarting the service.
+
+To change the repository or branch, run the setup command again:
+
+```bash
+sudo /opt/whatsapp-trivia/scripts/install-updater.sh \
+  https://github.com/OWNER/REPOSITORY.git stable
+```
+
+The older manual workflow still works: run `sudo ./scripts/install-systemd.sh` from a new source tree. It preserves `/etc/whatsapp-trivia.env` and the installed `var` directory.
 
 ## Troubleshooting
 
@@ -176,9 +220,11 @@ sudo systemctl reset-failed whatsapp-trivia
 sudo systemctl start whatsapp-trivia
 ```
 
-### Open Trivia DB unavailable
+### Trivia provider unavailable
 
-The bot logs a warning and uses the included local question bank. Games remain available, although category variety may be reduced.
+If The Trivia API is unavailable, the bot logs a warning and tries compatible SQLite-cached questions, then OpenTDB, then the bundled local bank. If OpenTDB is also unavailable, cached and bundled questions remain usable. Games can be shorter when a category does not have enough fresh questions after the chat cooldown is applied.
+
+For authentication or licensing errors, verify `THE_TRIVIA_API_KEY` and the account's permitted usage. The public endpoint may be used without a key only under The Trivia API's non-commercial licence.
 
 ### Health is live but not ready
 

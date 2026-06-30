@@ -83,3 +83,41 @@ function activeGame(id: string, chatId: string, hostPlayerId: number): ActiveGam
     hintsEnabled: true, answeredPlayerIds: new Set(), hintedPlayerIds: new Set(), timer: null,
   };
 }
+
+test('question cooldown is isolated per chat and expires by time', () => {
+  const f = fixture();
+  try {
+    f.repository.touchChat('cooldown-a@g.us', true);
+    f.repository.touchChat('cooldown-b@g.us', true);
+    const player = f.repository.upsertPlayer('cooldown@s.whatsapp.net', undefined, 'Cooldown');
+    f.repository.createGame({
+      chatId: 'cooldown-a@g.us', isGroup: true, hostPlayerId: player.id, mode: 'classic',
+      category: 'general', difficulty: 'mixed', timeoutSeconds: 20, revealDelayMs: 500,
+      hintsEnabled: true, questions,
+    });
+
+    const now = Date.now();
+    assert.equal(f.repository.recentQuestionHashes('cooldown-a@g.us', 24, now).has('q1'), true);
+    assert.equal(f.repository.recentQuestionHashes('cooldown-b@g.us', 24, now).has('q1'), false);
+    assert.equal(f.repository.recentQuestionHashes('cooldown-a@g.us', 0, now).size, 0);
+    assert.equal(
+      f.repository.recentQuestionHashes('cooldown-a@g.us', 24, now + 25 * 60 * 60 * 1000).has('q1'),
+      false,
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test('persists a per-chat question cooldown setting', () => {
+  const f = fixture();
+  try {
+    f.repository.touchChat('settings@g.us', true);
+    const settings = f.repository.getSettings('settings@g.us');
+    settings.questionCooldownHours = 72;
+    f.repository.saveSettings('settings@g.us', settings);
+    assert.equal(f.repository.getSettings('settings@g.us').questionCooldownHours, 72);
+  } finally {
+    f.close();
+  }
+});

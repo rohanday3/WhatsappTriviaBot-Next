@@ -98,7 +98,7 @@ Current achievements:
 
 ### `/categories`
 
-Lists all Open Trivia DB category keys, built-in mixes, and custom mixes for the chat.
+Lists all bot category keys, built-in mixes, and custom mixes for the chat. Provider-specific broad categories are mapped internally and are not exposed as game categories.
 
 Built-in mixes include:
 
@@ -149,6 +149,21 @@ Sets the default difficulty.
 ### `/set category <category|mixed>`
 
 Sets the default category.
+
+### `/set cooldown <hours|days|off>`
+
+Prevents questions from repeating in the same chat until the cooldown expires. The default is seven days.
+
+Examples:
+
+```text
+/set cooldown 24
+/set cooldown 48h
+/set cooldown 7d
+/set cooldown off
+```
+
+Question history is isolated by chat, so using a question in one group does not block it in another group.
 
 ### `/set hints <on|off>`
 

@@ -3,6 +3,8 @@ export type GameMode = 'classic' | 'sprint' | 'daily';
 export type GameStatus = 'active' | 'completed' | 'stopped' | 'interrupted';
 export type QuestionPhase = 'waiting' | 'open' | 'revealing' | 'finished';
 
+export type TriviaSource = 'the-trivia-api' | 'opentdb';
+
 export interface TriviaQuestion {
   sourceId: string;
   category: string;
@@ -11,6 +13,11 @@ export interface TriviaQuestion {
   options: string[];
   correctIndex: number;
   hash: string;
+}
+
+export interface CachedTriviaQuestion extends TriviaQuestion {
+  source: TriviaSource;
+  categoryKeys: string[];
 }
 
 export interface IncomingMessage {
@@ -30,6 +37,7 @@ export interface ChatSettings {
   revealDelayMs: number;
   defaultDifficulty: Difficulty;
   defaultCategory: string | null;
+  questionCooldownHours: number;
   showRoundLeaderboard: boolean;
   hintsEnabled: boolean;
   customGroups: Record<string, { name: string; categories: string[] }>;

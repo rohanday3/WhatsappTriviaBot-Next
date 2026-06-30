@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS chat_settings (
   reveal_delay_ms INTEGER NOT NULL,
   default_difficulty TEXT NOT NULL,
   default_category TEXT,
+  question_cooldown_hours INTEGER NOT NULL DEFAULT 168,
   show_round_leaderboard INTEGER NOT NULL DEFAULT 1,
   hints_enabled INTEGER NOT NULL DEFAULT 1,
   custom_groups_json TEXT NOT NULL DEFAULT '{}',
@@ -170,6 +171,33 @@ CREATE TABLE IF NOT EXISTS question_history (
 
 CREATE INDEX IF NOT EXISTS idx_question_history_recent
   ON question_history(chat_id, last_used_at DESC);
+
+
+CREATE TABLE IF NOT EXISTS trivia_question_cache (
+  question_hash TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL UNIQUE,
+  source TEXT NOT NULL CHECK (source IN ('the-trivia-api', 'opentdb')),
+  category TEXT NOT NULL,
+  difficulty TEXT NOT NULL CHECK (difficulty IN ('easy', 'medium', 'hard')),
+  prompt TEXT NOT NULL,
+  options_json TEXT NOT NULL,
+  correct_index INTEGER NOT NULL,
+  fetched_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  disabled INTEGER NOT NULL DEFAULT 0
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_trivia_cache_source_difficulty
+  ON trivia_question_cache(source, difficulty, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS trivia_question_categories (
+  question_hash TEXT NOT NULL REFERENCES trivia_question_cache(question_hash) ON DELETE CASCADE,
+  category_key TEXT NOT NULL,
+  PRIMARY KEY (question_hash, category_key)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_trivia_cache_category
+  ON trivia_question_categories(category_key, question_hash);
 
 CREATE TABLE IF NOT EXISTS daily_attempts (
   local_date TEXT NOT NULL,

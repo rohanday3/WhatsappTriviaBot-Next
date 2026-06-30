@@ -136,19 +136,25 @@ On startup, active games are reconstructed from the database. Once WhatsApp reco
 
 ## Trivia provider
 
-The provider uses Open Trivia DB when enabled and the included local bank as a fallback.
+The provider uses a layered source order:
 
-Reliability controls include:
+1. compatible questions already cached in SQLite from The Trivia API;
+2. fresh text-choice questions from The Trivia API;
+3. compatible OpenTDB cache entries and then an OpenTDB network request;
+4. the bundled local question bank.
 
-- one global API request queue;
-- a configurable minimum interval between API calls;
-- an API timeout;
-- session-token acquisition and reset;
-- per-category/difficulty caches;
+Reliability and quality controls include:
+
+- separate serialized request queues and rate limits for the primary and fallback providers;
+- an API timeout and optional The Trivia API key;
+- OpenTDB session-token acquisition and reset;
+- durable category/difficulty/source-indexed SQLite caching;
+- strict tag validation for narrow categories that share a broad primary category;
 - persistent per-chat question-history exclusion;
-- fallback to local questions when the API is unavailable.
+- a configurable cache-size cap with oldest-entry pruning;
+- no relaxation of category or cooldown rules when a provider is unavailable.
 
-This avoids each simultaneous `/play` command independently hammering the free API.
+The durable cache is global because questions are reusable, while `question_history` remains scoped to each chat. This lets one group reuse a cached question that another group has seen without violating either group's cooldown.
 
 ## WhatsApp transport
 

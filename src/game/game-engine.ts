@@ -88,15 +88,35 @@ export class GameEngine {
         return;
       }
 
-      await this.sendText(chatId, '🧠 Preparing fresh questions…');
-      const excluded = this.repository.recentQuestionHashes(chatId);
-      const questionSet = await this.questions.getQuestions({
-        count: options.questions,
-        category: options.category,
-        difficulty: options.difficulty,
-        excludeHashes: excluded,
-      });
       const settings = this.repository.getSettings(chatId);
+      await this.sendText(
+        chatId,
+        `🧠 Preparing fresh ${options.category ? `*${options.category}* ` : ''}questions…`,
+      );
+      const excluded = this.repository.recentQuestionHashes(
+        chatId,
+        settings.questionCooldownHours,
+      );
+      let questionSet: TriviaQuestion[];
+      try {
+        questionSet = await this.questions.getQuestions({
+          count: options.questions,
+          category: options.category,
+          difficulty: options.difficulty,
+          excludeHashes: excluded,
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : 'Questions are unavailable';
+        await this.sendText(chatId, `⚠️ ${detail}`);
+        return;
+      }
+      if (questionSet.length < options.questions) {
+        await this.sendText(
+          chatId,
+          `ℹ️ Starting with *${questionSet.length}* matching fresh questions instead of ` +
+            `*${options.questions}*; no unrelated or cooldown-blocked questions were added.`,
+        );
+      }
       const timeoutSeconds = options.mode === 'sprint' ? Math.min(12, settings.timeoutSeconds) : settings.timeoutSeconds;
       const gameId = this.repository.createGame({
         chatId,

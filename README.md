@@ -11,14 +11,15 @@ A from-scratch WhatsApp trivia service designed for group chats, direct messages
 - **Speed-based scoring**, difficulty multipliers, streaks, wins, accuracy, and best scores.
 - **Achievements** such as Fast Fingers, Flawless, and Champion.
 - **Optional one-player hints** that remove two wrong options with a point penalty.
-- **Per-chat settings** for question count, timeout, difficulty, category, hints, and round standings.
+- **Per-chat settings** for question count, timeout, difficulty, category, question cooldown, hints, and round standings.
 - **Custom category mixes** retained from the previous bot concept.
-- **Open Trivia DB** with a serialized request gate, cache, session token, and local fallback bank.
-- **SQLite persistence** for games, scores, settings, message deduplication, question history, and WhatsApp credentials.
+- **The Trivia API as the primary source**, with strict category/tag validation, OpenTDB emergency fallback, and a bundled local bank.
+- **Durable SQLite question cache** so fetched questions survive restarts and remain available during provider outages.
+- **SQLite persistence** for games, scores, settings, message deduplication, per-chat question history, and WhatsApp credentials.
 - **Restart recovery** for games that were open when the process stopped.
 - **Health endpoints, Prometheus-style metrics, and an admin-only WhatsApp health report**.
 - **systemd and Docker isolation** with memory, CPU, process, filesystem, and restart limits.
-- **Automated backups, auth reset, and diagnostics**.
+- **One-command Git updates**, automated backups, auth reset, and diagnostics.
 
 ## Important WhatsApp note
 
@@ -54,6 +55,27 @@ PAIRING_NUMBER=27821234567
 
 Then run `npm start` and enter the pairing code shown in the logs. The phone number must contain digits only and include the country code.
 
+## Trivia provider setup
+
+The bot works without an API key for non-commercial use. It requests text-choice questions from **The Trivia API** first, stores them in SQLite, and only uses **OpenTDB** or the bundled bank when the primary pool cannot supply enough fresh questions.
+
+For commercial use or paid API features, add the key issued in The Trivia API dashboard:
+
+```env
+THE_TRIVIA_API_KEY=your-api-key
+```
+
+Provider controls:
+
+```env
+TRIVIA_API_ENABLED=true          # master switch
+THE_TRIVIA_API_ENABLED=true      # primary provider
+OPENTDB_ENABLED=true             # emergency fallback
+TRIVIA_CACHE_MAX_QUESTIONS=20000 # durable SQLite cache cap
+```
+
+Category correctness and cooldowns are enforced by the bot even when provider-side duplicate sessions are unavailable. Narrow categories such as `film`, `tv`, `computers`, and `animals` must match the primary question's tags; unrelated broad-category results are discarded.
+
 ## Main commands
 
 ```text
@@ -69,6 +91,7 @@ Then run `npm start` and enter the pairing code shown in the logs. The phone num
 /achievements
 /categories
 /settings
+/set cooldown 7d
 /help
 /health [full]   # configured bot administrators only
 ```
@@ -102,6 +125,38 @@ Recommended for the first server pairing:
 PAIRING_MODE=code
 PAIRING_NUMBER=27821234567
 ```
+
+### One-command server updates
+
+When the first installation is run from a Git clone, the installer detects the `origin` repository and current branch automatically. Future updates are then:
+
+```bash
+sudo update-whatsapp-trivia
+```
+
+The updater fetches the configured branch, validates the complete test/typecheck/build suite in a temporary directory, creates a SQLite backup, deploys the release, refreshes the systemd unit and updater itself, and restarts only the trivia service.
+
+For an installation made from a downloaded ZIP, configure the repository once:
+
+```bash
+sudo ./scripts/install-updater.sh https://github.com/OWNER/REPOSITORY.git main
+sudo update-whatsapp-trivia
+```
+
+Alternatively, configure it during the first systemd installation:
+
+```bash
+sudo REPO_URL=https://github.com/OWNER/REPOSITORY.git UPDATE_BRANCH=main \
+  ./scripts/install-systemd.sh
+```
+
+Validate the newest repository commit without deploying or restarting:
+
+```bash
+sudo update-whatsapp-trivia --check
+```
+
+The repository must be accessible to `root` on the server. For a private repository, configure a read-only deploy key or another non-interactive Git credential for the root account.
 
 The service is capped by default at:
 
@@ -192,7 +247,7 @@ npm run build
 npm audit
 ```
 
-The project ships with tests for concurrent chat isolation, same-chat collision prevention, leaderboards, message deduplication, scoring, queue serialization, and SQLite auth persistence.
+The project ships with tests for concurrent chat isolation, same-chat collision prevention, leaderboards, message deduplication, scoring, queue serialization, strict provider category filtering, durable question caching, database migration, and SQLite auth persistence.
 
 ## Documentation
 

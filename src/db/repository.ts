@@ -3,12 +3,14 @@ import type { SQLInputValue } from 'node:sqlite';
 import { config } from '../config.js';
 import type {
   ActiveGame,
+  CachedTriviaQuestion,
   ChatSettings,
   Difficulty,
   GameMode,
   LeaderboardEntry,
   Player,
   TriviaQuestion,
+  TriviaSource,
 } from '../types.js';
 import { safeName } from '../util/text.js';
 import { Database } from './database.js';
@@ -45,12 +47,25 @@ interface QuestionRow extends Record<string, unknown> {
   question_hash: string;
 }
 
+interface CachedQuestionRow extends Record<string, unknown> {
+  question_hash: string;
+  source_id: string;
+  source: TriviaSource;
+  category: string;
+  difficulty: 'easy' | 'medium' | 'hard';
+  prompt: string;
+  options_json: string;
+  correct_index: number;
+  category_keys: string | null;
+}
+
 const DEFAULT_SETTINGS: ChatSettings = {
   questionsPerGame: config.defaultQuestions,
   timeoutSeconds: config.defaultTimeoutSeconds,
   revealDelayMs: config.defaultRevealDelayMs,
   defaultDifficulty: 'mixed',
   defaultCategory: null,
+  questionCooldownHours: config.defaultQuestionCooldownHours,
   showRoundLeaderboard: true,
   hintsEnabled: true,
   customGroups: {},
@@ -134,6 +149,9 @@ export class Repository {
       revealDelayMs: Number(row.reveal_delay_ms),
       defaultDifficulty: String(row.default_difficulty) as Difficulty,
       defaultCategory: row.default_category ? String(row.default_category) : null,
+      questionCooldownHours: Number(
+        row.question_cooldown_hours ?? config.defaultQuestionCooldownHours,
+      ),
       showRoundLeaderboard: Boolean(row.show_round_leaderboard),
       hintsEnabled: Boolean(row.hints_enabled),
       customGroups: parseJson<Record<string, { name: string; categories: string[] }>>(
@@ -147,15 +165,16 @@ export class Repository {
     this.db.run(
       `INSERT INTO chat_settings(
          chat_id, questions_per_game, timeout_seconds, reveal_delay_ms,
-         default_difficulty, default_category, show_round_leaderboard,
-         hints_enabled, custom_groups_json, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         default_difficulty, default_category, question_cooldown_hours,
+         show_round_leaderboard, hints_enabled, custom_groups_json, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(chat_id) DO UPDATE SET
          questions_per_game = excluded.questions_per_game,
          timeout_seconds = excluded.timeout_seconds,
          reveal_delay_ms = excluded.reveal_delay_ms,
          default_difficulty = excluded.default_difficulty,
          default_category = excluded.default_category,
+         question_cooldown_hours = excluded.question_cooldown_hours,
          show_round_leaderboard = excluded.show_round_leaderboard,
          hints_enabled = excluded.hints_enabled,
          custom_groups_json = excluded.custom_groups_json,
@@ -167,6 +186,7 @@ export class Repository {
         settings.revealDelayMs,
         settings.defaultDifficulty,
         settings.defaultCategory,
+        settings.questionCooldownHours,
         settings.showRoundLeaderboard ? 1 : 0,
         settings.hintsEnabled ? 1 : 0,
         JSON.stringify(settings.customGroups),
@@ -590,13 +610,135 @@ export class Repository {
     return Number(result.changes);
   }
 
-  recentQuestionHashes(chatId: string, limit = 200): Set<string> {
+  recentQuestionHashes(
+    chatId: string,
+    cooldownHours = config.defaultQuestionCooldownHours,
+    now = Date.now(),
+  ): Set<string> {
+    if (cooldownHours <= 0) return new Set();
+    const cutoff = now - cooldownHours * 60 * 60 * 1000;
     const rows = this.db.all<{ question_hash: string }>(
       `SELECT question_hash FROM question_history
-       WHERE chat_id = ? ORDER BY last_used_at DESC LIMIT ?`,
-      [chatId, limit],
+       WHERE chat_id = ? AND last_used_at >= ?
+       ORDER BY last_used_at DESC`,
+      [chatId, cutoff],
     );
     return new Set(rows.map((row) => row.question_hash));
+  }
+
+  getCachedQuestions(input: {
+    sources: TriviaSource[];
+    categoryKey: string | null;
+    difficulty: Difficulty;
+    limit: number;
+  }): CachedTriviaQuestion[] {
+    if (!input.sources.length || input.limit <= 0) return [];
+    const where: string[] = ['q.disabled = 0'];
+    const params: SQLInputValue[] = [];
+    const sourcePlaceholders = input.sources.map(() => '?').join(', ');
+    where.push(`q.source IN (${sourcePlaceholders})`);
+    params.push(...input.sources);
+    if (input.difficulty !== 'mixed') {
+      where.push('q.difficulty = ?');
+      params.push(input.difficulty);
+    }
+    if (input.categoryKey) {
+      where.push(
+        `EXISTS (
+          SELECT 1 FROM trivia_question_categories filter_category
+          WHERE filter_category.question_hash = q.question_hash
+            AND filter_category.category_key = ?
+        )`,
+      );
+      params.push(input.categoryKey);
+    }
+    params.push(Math.max(1, Math.min(2000, input.limit)));
+
+    return this.db.all<CachedQuestionRow>(
+      `SELECT q.*,
+        (SELECT GROUP_CONCAT(category_key)
+         FROM trivia_question_categories all_categories
+         WHERE all_categories.question_hash = q.question_hash) AS category_keys
+       FROM trivia_question_cache q
+       WHERE ${where.join(' AND ')}
+       ORDER BY q.updated_at DESC
+       LIMIT ?`,
+      params,
+    ).map((row) => ({
+      sourceId: row.source_id,
+      source: row.source,
+      categoryKeys: row.category_keys ? row.category_keys.split(',').filter(Boolean) : [],
+      category: row.category,
+      difficulty: row.difficulty,
+      prompt: row.prompt,
+      options: JSON.parse(row.options_json) as string[],
+      correctIndex: Number(row.correct_index),
+      hash: row.question_hash,
+    }));
+  }
+
+  upsertCachedQuestions(questions: CachedTriviaQuestion[], now = Date.now()): void {
+    if (!questions.length) return;
+    this.db.transaction(() => {
+      const upsertQuestion = this.db.raw.prepare(
+        `INSERT INTO trivia_question_cache(
+          question_hash, source_id, source, category, difficulty, prompt,
+          options_json, correct_index, fetched_at, updated_at, disabled
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        ON CONFLICT(question_hash) DO UPDATE SET
+          source_id = CASE
+            WHEN trivia_question_cache.source = 'the-trivia-api'
+              AND excluded.source <> 'the-trivia-api'
+            THEN trivia_question_cache.source_id ELSE excluded.source_id END,
+          source = CASE
+            WHEN trivia_question_cache.source = 'the-trivia-api'
+              AND excluded.source <> 'the-trivia-api'
+            THEN trivia_question_cache.source ELSE excluded.source END,
+          category = CASE
+            WHEN trivia_question_cache.source = 'the-trivia-api'
+              AND excluded.source <> 'the-trivia-api'
+            THEN trivia_question_cache.category ELSE excluded.category END,
+          difficulty = CASE
+            WHEN trivia_question_cache.source = 'the-trivia-api'
+              AND excluded.source <> 'the-trivia-api'
+            THEN trivia_question_cache.difficulty ELSE excluded.difficulty END,
+          prompt = CASE
+            WHEN trivia_question_cache.source = 'the-trivia-api'
+              AND excluded.source <> 'the-trivia-api'
+            THEN trivia_question_cache.prompt ELSE excluded.prompt END,
+          options_json = CASE
+            WHEN trivia_question_cache.source = 'the-trivia-api'
+              AND excluded.source <> 'the-trivia-api'
+            THEN trivia_question_cache.options_json ELSE excluded.options_json END,
+          correct_index = CASE
+            WHEN trivia_question_cache.source = 'the-trivia-api'
+              AND excluded.source <> 'the-trivia-api'
+            THEN trivia_question_cache.correct_index ELSE excluded.correct_index END,
+          updated_at = excluded.updated_at,
+          disabled = 0`,
+      );
+      const insertCategory = this.db.raw.prepare(
+        `INSERT OR IGNORE INTO trivia_question_categories(question_hash, category_key)
+         VALUES (?, ?)`,
+      );
+      for (const question of questions) {
+        upsertQuestion.run(
+          question.hash,
+          question.sourceId,
+          question.source,
+          question.category,
+          question.difficulty,
+          question.prompt,
+          JSON.stringify(question.options),
+          question.correctIndex,
+          now,
+          now,
+        );
+        for (const categoryKey of new Set(question.categoryKeys)) {
+          if (categoryKey) insertCategory.run(question.hash, categoryKey);
+        }
+      }
+    });
   }
 
   leaderboard(scope: 'global' | 'chat', chatId: string, sinceMs?: number): LeaderboardEntry[] {

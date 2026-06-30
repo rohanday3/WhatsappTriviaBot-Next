@@ -21,11 +21,12 @@ import { QuestionProvider } from './trivia/question-provider.js';
 import { localDateKey, startOfWeekMs } from './util/date.js';
 import { clamp, percentage } from './util/text.js';
 import { WhatsAppTransport, type ConnectionState } from './whatsapp/transport.js';
+import { APP_VERSION } from './version.js';
 
 export class TriviaApplication {
   private readonly db = new Database(config.databasePath);
   private readonly repository = new Repository(this.db);
-  private readonly provider = new QuestionProvider();
+  private readonly provider = new QuestionProvider({ cache: this.repository });
   private readonly transport: WhatsAppTransport;
   private readonly engine: GameEngine;
   private readonly healthServer: HealthServer;
@@ -340,10 +341,11 @@ export class TriviaApplication {
         `Reveal delay: *${settings.revealDelayMs}ms*\n` +
         `Difficulty: *${settings.defaultDifficulty}*\n` +
         `Category: *${settings.defaultCategory ?? 'mixed'}*\n` +
+        `Question cooldown: *${formatCooldown(settings.questionCooldownHours)}*\n` +
         `Hints: *${settings.hintsEnabled ? 'on' : 'off'}*\n` +
         `Round standings: *${settings.showRoundLeaderboard ? 'on' : 'off'}*\n\n` +
         `Change with */set questions 10*, */set timeout 25*, */set difficulty hard*, ` +
-        `*/set category sports*, */set hints off* or */set roundscores off*.` ,
+        `*/set category sports*, */set cooldown 7d*, */set hints off* or */set roundscores off*.` ,
     );
   }
 
@@ -354,7 +356,7 @@ export class TriviaApplication {
     }
     const [fieldRaw, valueRaw] = args;
     if (!fieldRaw || !valueRaw) {
-      await this.transport.sendText(message.chatId, 'Usage: */set <questions|timeout|difficulty|category|hints|roundscores> <value>*');
+      await this.transport.sendText(message.chatId, 'Usage: */set <questions|timeout|difficulty|category|cooldown|hints|roundscores> <value>*');
       return;
     }
     const field = fieldRaw.toLowerCase();
@@ -392,6 +394,10 @@ export class TriviaApplication {
             if (!category) throw new Error('Unknown category. Use /categories');
             settings.defaultCategory = category.key;
           }
+          break;
+        case 'cooldown':
+        case 'questioncooldown':
+          settings.questionCooldownHours = parseCooldownHours(value);
           break;
         case 'hints':
           settings.hintsEnabled = parseOnOff(value);
@@ -560,9 +566,10 @@ export class TriviaApplication {
   private async sendAbout(chatId: string): Promise<void> {
     await this.transport.sendText(
       chatId,
-      `ℹ️ *${config.botName} v3.1*\n` +
+      `ℹ️ *${config.botName} v${APP_VERSION}*\n` +
         `A concurrent WhatsApp trivia bot with durable group/global leaderboards, achievements, ` +
         `daily games and isolated server deployment.\n\n` +
+        `Questions are supplied primarily by The Trivia API, with OpenTDB and a bundled bank as fallbacks.\n` +
         `It uses an unofficial WhatsApp Web connection, so use a dedicated number and avoid unsolicited messaging.`,
     );
   }
@@ -684,6 +691,22 @@ function parseOnOff(value: string): boolean {
   if (['on', 'true', 'yes', '1'].includes(value)) return true;
   if (['off', 'false', 'no', '0'].includes(value)) return false;
   throw new Error('Value must be on or off');
+}
+
+function parseCooldownHours(value: string): number {
+  if (['off', 'none', 'disabled'].includes(value)) return 0;
+  const match = value.match(/^(\d+)(h|d)?$/);
+  if (!match) throw new Error('Cooldown must be hours, such as 24 or 24h, days such as 7d, or off');
+  const amount = Number.parseInt(match[1]!, 10);
+  const hours = match[2] === 'd' ? amount * 24 : amount;
+  if (hours < 0 || hours > 4320) throw new Error('Cooldown must be between 0 and 180 days');
+  return hours;
+}
+
+function formatCooldown(hours: number): string {
+  if (hours <= 0) return 'off';
+  if (hours % 24 === 0) return `${hours / 24}d`;
+  return `${hours}h`;
 }
 
 function escapeRegExp(value: string): string {
