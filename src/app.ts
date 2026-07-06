@@ -16,7 +16,15 @@ import { levelForCorrect, levelProgressBar } from './game/levels.js';
 import { HealthServer } from './http/health-server.js';
 import { logger } from './logger.js';
 import type { ChatSettings, Difficulty, HealthSnapshot, IncomingMessage, PlayOptions, Player } from './types.js';
-import { categoryByKey, CATEGORIES, CATEGORY_GROUPS, CATEGORY_SECTIONS } from './trivia/catalog.js';
+import {
+  categoryByKey,
+  CATEGORIES,
+  CATEGORY_GROUPS,
+  CATEGORY_SECTIONS,
+  resolveCategoryInput,
+  searchCatalog,
+  type Category,
+} from './trivia/catalog.js';
 import { QuestionProvider } from './trivia/question-provider.js';
 import { localDateKey, startOfWeekMs } from './util/date.js';
 import { clamp, percentage } from './util/text.js';
@@ -179,7 +187,7 @@ export class TriviaApplication {
           await this.handleLevels(message.chatId, player);
           break;
         case 'categories':
-          await this.handleCategories(message.chatId);
+          await this.handleCategories(message.chatId, args.join(' '));
           break;
         case 'settings':
           await this.handleSettings(message.chatId);
@@ -250,7 +258,10 @@ export class TriviaApplication {
       return;
     }
     const settings = this.repository.getSettings(message.chatId);
-    const options = parsePlayOptions(args, settings, forcedMode);
+    const { options, notices } = parsePlayOptions(args, settings, forcedMode);
+    if (notices.length) {
+      await this.transport.sendText(message.chatId, notices.join('\n'));
+    }
     await this.engine.startGame(
       message.chatId,
       message.isGroup,
@@ -375,14 +386,19 @@ export class TriviaApplication {
     );
   }
 
-  private async handleCategories(chatId: string): Promise<void> {
+  private async handleCategories(chatId: string, query?: string): Promise<void> {
+    const trimmedQuery = query?.trim();
+    if (trimmedQuery) {
+      await this.sendCategorySearchResults(chatId, trimmedQuery);
+      return;
+    }
     const settings = this.repository.getSettings(chatId);
     const categoriesByKey = new Map(CATEGORIES.map((item) => [item.key, item]));
     const sections = CATEGORY_SECTIONS.map((section) => {
       const lines = section.categories
         .map((key) => categoriesByKey.get(key))
-        .filter((item): item is (typeof CATEGORIES)[number] => Boolean(item))
-        .map((item) => `• *${item.key}* — ${item.name}`)
+        .filter((item): item is Category => Boolean(item))
+        .map((item) => categoryLine(item))
         .join('\n');
       return `*${section.title}*\n${lines}`;
     }).join('\n\n');
@@ -394,11 +410,36 @@ export class TriviaApplication {
       .join('\n');
     await this.transport.sendText(
       chatId,
-      `🗂️ *Categories*\n_Type the bold word after */play*._\n\n${sections}\n\n` +
-        `🎲 *Play a blend of topics*\n${builtIn}${custom ? `\n${custom}` : ''}\n\n` +
-        `🏷️ *Want something specific?* Add *tag:word*, e.g. a topic, era, or person.\n\n` +
+      `🗂️ *Categories*\n` +
+        `Type the bold word after */play*\n` +
+        `Search: */categories <word>*\n\n${sections}\n\n` +
+        `🎲 *Blend of topics*\n${builtIn}${custom ? `\n${custom}` : ''}\n\n` +
+        `🏷️ *Want something specific?*\n` +
+        `Add *tag:word* — a topic, era or person.\n\n` +
         `Examples:\n*/play sports hard 10*\n*/play group:entertainment*\n*/play art tag:renaissance*`,
     );
+  }
+
+  private async sendCategorySearchResults(chatId: string, query: string): Promise<void> {
+    const result = searchCatalog(query);
+    if (!result.categories.length && !result.tagHits.length) {
+      const suggestionLines = result.suggestions.length
+        ? `Closest match${result.suggestions.length > 1 ? 'es' : ''}:\n${result.suggestions
+            .map((item) => `• *${item.key}* — ${item.name}`)
+            .join('\n')}`
+        : `Type */categories* for the full list.`;
+      await this.transport.sendText(chatId, `🔎 No match for "${query}".\n\n${suggestionLines}`);
+      return;
+    }
+    const parts = [`🔎 *Matches for "${query}"*`];
+    if (result.categories.length) {
+      parts.push(`*Categories*\n${result.categories.map((item) => categoryLine(item)).join('\n')}`);
+    }
+    if (result.tagHits.length) {
+      parts.push(`*Tags*\n${result.tagHits.map((hit) => `• *${hit.tag}* → *${hit.category.key}*`).join('\n')}`);
+    }
+    parts.push(`Play one with */play <name>*.`);
+    await this.transport.sendText(chatId, parts.join('\n\n'));
   }
 
   private async handleSettings(chatId: string): Promise<void> {
@@ -436,6 +477,7 @@ export class TriviaApplication {
     const field = fieldRaw.toLowerCase();
     const value = valueRaw.toLowerCase();
     const settings = this.repository.getSettings(message.chatId);
+    let confirmation: string | null = null;
     try {
       switch (field) {
         case 'questions': {
@@ -461,14 +503,27 @@ export class TriviaApplication {
           if (!isDifficulty(value)) throw new Error('Difficulty must be adaptive, mixed, easy, medium or hard');
           settings.defaultDifficulty = value;
           break;
-        case 'category':
-          if (value === 'mixed' || value === 'any') settings.defaultCategory = null;
-          else {
-            const category = categoryByKey(value);
-            if (!category) throw new Error('Unknown category. Use /categories');
-            settings.defaultCategory = category.key;
+        case 'category': {
+          if (value === 'mixed' || value === 'any') {
+            settings.defaultCategory = null;
+            confirmation = `✅ Category is now *mixed*.`;
+            break;
           }
+          const resolution = resolveCategoryInput(valueRaw);
+          if (resolution.kind === 'suggestions') {
+            throw new Error(
+              `Unknown category "${valueRaw}". Did you mean: ${resolution.categories.map((item) => item.key).join(', ')}?`,
+            );
+          }
+          if (resolution.kind === 'none') {
+            throw new Error(`Unknown category "${valueRaw}". Type */categories* to search.`);
+          }
+          settings.defaultCategory = resolution.category.key;
+          confirmation = resolution.exact
+            ? `✅ Category is now *${resolution.category.key}*.`
+            : `✅ Category is now *${resolution.category.key}*\n(closest match to "${valueRaw}").`;
           break;
+        }
         case 'cooldown':
         case 'questioncooldown':
           settings.questionCooldownHours = parseCooldownHours(value);
@@ -490,7 +545,7 @@ export class TriviaApplication {
     }
     this.repository.saveSettings(message.chatId, settings);
     const label = SET_FIELD_LABELS[field] ?? field;
-    await this.transport.sendText(message.chatId, `✅ ${label} is now *${value}*.`);
+    await this.transport.sendText(message.chatId, confirmation ?? `✅ ${label} is now *${value}*.`);
   }
 
   private async handleAddGroup(message: IncomingMessage, player: Player, rawText: string): Promise<void> {
@@ -510,12 +565,27 @@ export class TriviaApplication {
     const key = match[1]!.toLowerCase();
     const name = (match[2] ?? match[3])!.trim();
     const requested = match[4]!.split(',').map((item) => item.trim()).filter(Boolean);
-    const categories = requested.map(categoryByKey).filter(Boolean).map((item) => item!.key);
-    if (!categories.length) throw new Error('No valid categories were supplied');
+    const resolved: string[] = [];
+    const unresolved: string[] = [];
+    for (const token of requested) {
+      const resolution = resolveCategoryInput(token);
+      if (resolution.kind === 'category' || resolution.kind === 'tag') {
+        resolved.push(resolution.category.key);
+      } else {
+        unresolved.push(token);
+      }
+    }
+    if (!resolved.length) {
+      const hint = unresolved.length ? ` Unrecognized: ${unresolved.join(', ')}.\nType */categories* to search.` : '';
+      await this.transport.sendText(message.chatId, `❌ No valid categories were supplied.${hint}`);
+      return;
+    }
+    const categories = [...new Set(resolved)];
     const settings = this.repository.getSettings(message.chatId);
-    settings.customGroups[key] = { name, categories: [...new Set(categories)] };
+    settings.customGroups[key] = { name, categories };
     this.repository.saveSettings(message.chatId, settings);
-    await this.transport.sendText(message.chatId, `✅ Created *${name}*. Use */play group:${key}*.`);
+    const skippedNote = unresolved.length ? `\n(skipped: ${unresolved.join(', ')})` : '';
+    await this.transport.sendText(message.chatId, `✅ Created *${name}*.${skippedNote}\nUse */play group:${key}*.`);
   }
 
   private async handleRemoveGroup(message: IncomingMessage, player: Player, args: string[]): Promise<void> {
@@ -614,34 +684,48 @@ export class TriviaApplication {
   private async sendHelp(message: IncomingMessage): Promise<void> {
     const hintCommand = message.isGroup
       ? ''
-      : `*/hint* — remove two wrong answers (costs 25% of the points)\n`;
+      : `*/hint* – remove 2 wrong answers\n(costs 25% of the points)\n`;
     const adminCommand = this.isBotAdmin(message)
-      ? `*/health [full]* — server status (bot admins only)\n`
+      ? `*/health [full]* – server status\n(bot admins only)\n`
       : '';
 
     await this.transport.sendText(
       message.chatId,
       `🎮 *${config.botName} commands*\n\n` +
         `*Play*\n` +
-        `*/play [category] [difficulty] [count]* — start a game\n` +
-        `*/sprint* — fast 5-question game\n` +
-        `*/daily* — one solo challenge per day\n` +
-        `*/rapidfire* — 15 questions, 7s each\n` +
-        `*/zen* — no timer, answer whenever\n` +
-        `*/survival* — one wrong answer and you're out\n` +
-        `*/duel* — group only, first to 5 correct wins\n` +
+        `*/play*\n` +
+        `[category] [difficulty] [count]\n` +
+        `Starts a game, all optional\n\n` +
+        `*/sprint* – fast 5 questions\n` +
+        `*/daily* – 1 solo run per day\n` +
+        `*/rapidfire* – 15 Q, 7s each\n` +
+        `*/zen* – no timer\n` +
+        `*/survival* – 1 miss, you're out\n` +
+        `*/duel* – group, first to 5 wins\n` +
         hintCommand +
-        `*/score* — see the standings so far\n` +
-        `*/stop* | */skip* — stop or skip a question (host or admin)\n\n` +
+        `*/score* – see standings so far\n` +
+        `*/stop* – end game (host/admin)\n` +
+        `*/skip* – skip Q (host/admin)\n\n` +
         `*Progress*\n` +
-        `*/leaderboard [group|global] [weekly]* — top players\n` +
-        `*/stats* — your stats | */achievements* — your badges | */levels* — your levels by category\n\n` +
+        `*/leaderboard*\n` +
+        `[group|global] [weekly]\n` +
+        `Top players\n\n` +
+        `*/stats* – your stats\n` +
+        `*/achievements* – your badges\n` +
+        `*/levels* – levels by category\n\n` +
         `*Info*\n` +
-        `*/categories* — topics you can play | */settings* — this chat's defaults\n` +
-        `*/help* | */about* | */ping*\n` +
+        `*/categories [search]*\n` +
+        `Topics you can play or search\n\n` +
+        `*/settings* – this chat's setup\n` +
+        `*/help* – this message\n` +
+        `*/about* – about the bot\n` +
+        `*/ping* – bot status\n` +
         adminCommand +
         `\n` +
-        `Examples: */play sports hard 10*, */play group:entertainment*, */play art tag:renaissance*`,
+        `Examples:\n` +
+        `*/play sports hard 10*\n` +
+        `*/play group:entertainment*\n` +
+        `*/play art tag:renaissance*`,
     );
   }
 
@@ -724,13 +808,14 @@ function parsePlayOptions(
   args: string[],
   settings: ChatSettings,
   forcedMode: PlayOptions['mode'],
-): PlayOptions {
+): { options: PlayOptions; notices: string[] } {
   let mode = forcedMode;
   let questions = forcedModeQuestionCount(forcedMode) ?? settings.questionsPerGame;
   let difficulty = settings.defaultDifficulty;
   let category = settings.defaultCategory;
   let categories: string[] | null = null;
   const tags: string[] = [];
+  const notices: string[] = [];
   const groups = { ...CATEGORY_GROUPS, ...settings.customGroups };
 
   for (const original of args) {
@@ -756,16 +841,34 @@ function parsePlayOptions(
       continue;
     }
     const groupKey = token.startsWith('group:') ? token.slice(6) : null;
-    if (groupKey && groups[groupKey]?.categories.length) {
-      // Draw questions from every category in the mix, rather than picking one at random.
-      categories = groups[groupKey]!.categories;
-      category = null;
+    if (groupKey !== null) {
+      if (groups[groupKey]?.categories.length) {
+        // Draw questions from every category in the mix, rather than picking one at random.
+        categories = groups[groupKey]!.categories;
+        category = null;
+      } else {
+        notices.push(`❓ No mix called "${groupKey}".\nType */categories* to see the options.`);
+      }
       continue;
     }
-    const matchedCategory = categoryByKey(token);
-    if (matchedCategory) {
-      category = matchedCategory.key;
+    const resolution = resolveCategoryInput(original);
+    if (resolution.kind === 'category') {
+      category = resolution.category.key;
       categories = null;
+      if (!resolution.exact) {
+        notices.push(`🔎 Playing *${resolution.category.name}*\n(closest match to "${original}").`);
+      }
+    } else if (resolution.kind === 'tag') {
+      category = resolution.category.key;
+      categories = null;
+      tags.push(resolution.tag);
+      notices.push(`🏷️ "${original}" is a tag.\nPlaying *${resolution.category.name}*, narrowed to *${resolution.tag}*.`);
+    } else if (resolution.kind === 'suggestions') {
+      notices.push(
+        `❓ Didn't recognize "${original}".\nDid you mean: ${resolution.categories.map((item) => item.key).join(', ')}?`,
+      );
+    } else {
+      notices.push(`❓ Didn't recognize "${original}".\nType */categories* to see topics.`);
     }
   }
   if (mode === 'daily') {
@@ -774,8 +877,12 @@ function parsePlayOptions(
     category = null;
     categories = null;
     tags.length = 0;
+    notices.length = 0; // Daily ignores category/tag entirely, so any related notice above would be misleading.
   }
-  return { mode, questions, difficulty, category, categories, tags: tags.length ? tags : null };
+  return {
+    options: { mode, questions, difficulty, category, categories, tags: tags.length ? tags : null },
+    notices,
+  };
 }
 
 const SET_FIELD_LABELS: Record<string, string> = {
@@ -791,6 +898,12 @@ const SET_FIELD_LABELS: Record<string, string> = {
   roundscores: 'Round standings',
   roundstandings: 'Round standings',
 };
+
+/** Drops the redundant display name when it's just the key spelled out (e.g. sports -> Sports), to keep menu lines short. */
+function categoryLine(category: Category): string {
+  const normalizedName = category.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return normalizedName === category.key ? `• *${category.key}*` : `• *${category.key}* — ${category.name}`;
+}
 
 function isDifficulty(value: string): value is Difficulty {
   return value === 'mixed' || value === 'easy' || value === 'medium' || value === 'hard' || value === 'adaptive';

@@ -1,3 +1,5 @@
+import { rankFuzzyMatches } from '../util/fuzzy.js';
+
 // Bot categories are a curated superset that tries to line up with what each
 // provider can actually serve:
 //  - OpenTDB has 24 fixed categories, each requestable directly by numeric id
@@ -36,6 +38,7 @@ export const CATEGORIES = [
 ] as const;
 
 export type CategoryKey = (typeof CATEGORIES)[number]['key'];
+export type Category = (typeof CATEGORIES)[number];
 
 export const CATEGORY_GROUPS: Record<string, { name: string; categories: string[] }> = {
   general: { name: 'General Mix', categories: ['general', 'history', 'geography', 'politics'] },
@@ -190,6 +193,147 @@ export function categoryByKey(value: string | null | undefined) {
       normalizeKey(category.key) === canonical ||
       normalizeKey(category.name) === canonical,
   ) ?? null;
+}
+
+// Reverse of CATEGORY_KEY_ALIASES: canonical key -> alias words users might type,
+// used so aliases also take part in fuzzy/search matching, not just exact lookup.
+const CATEGORY_ALIASES_BY_KEY: Partial<Record<CategoryKey, string[]>> = {};
+for (const [alias, key] of Object.entries(CATEGORY_KEY_ALIASES)) {
+  (CATEGORY_ALIASES_BY_KEY[key as CategoryKey] ??= []).push(alias);
+}
+
+// Every tag known to belong to a category, so a bare word like "superheroes"
+// can resolve straight to its category (comics) instead of coming back empty.
+const TAG_INDEX: Array<{ tag: string; categoryKey: CategoryKey }> = Object.entries(THE_TRIVIA_TAGS).flatMap(
+  ([key, tags]) => tags!.map((tag) => ({ tag, categoryKey: key as CategoryKey })),
+);
+
+const CATEGORY_SEARCH_CANDIDATES: Array<{ item: Category; text: string }> = CATEGORIES.flatMap((category) => [
+  { item: category, text: category.key },
+  { item: category, text: category.name },
+  ...(CATEGORY_ALIASES_BY_KEY[category.key] ?? []).map((alias) => ({ item: category, text: alias })),
+]);
+
+const TAG_SEARCH_CANDIDATES: Array<{ item: (typeof TAG_INDEX)[number]; text: string }> = TAG_INDEX.map((entry) => ({
+  item: entry,
+  text: entry.tag,
+}));
+
+export type CategoryResolution =
+  | { kind: 'category'; category: Category; exact: boolean }
+  | { kind: 'tag'; category: Category; tag: string; exact: boolean }
+  | { kind: 'suggestions'; categories: Category[] }
+  | { kind: 'none' };
+
+/**
+ * Forgiving lookup for anything a user might type where a category is expected:
+ * the canonical key/name, a known alias, a typo of any of those (fuzzy-matched),
+ * or even a tag word that belongs to exactly one category (e.g. "superheroes"
+ * resolves to comics). Falls back to up to three close-looking suggestions
+ * rather than a bare "not found" so a typo never dead-ends the user.
+ */
+export function resolveCategoryInput(rawInput: string): CategoryResolution {
+  const input = rawInput.trim();
+  if (!input) return { kind: 'none' };
+
+  const exact = categoryByKey(input);
+  if (exact) return { kind: 'category', category: exact, exact: true };
+
+  const normalizedTag = normalizeUserTag(input);
+  const exactTag = TAG_INDEX.find((entry) => entry.tag === normalizedTag);
+  if (exactTag) {
+    return { kind: 'tag', category: categoryByKey(exactTag.categoryKey)!, tag: exactTag.tag, exact: true };
+  }
+
+  const categoryMatches = rankFuzzyMatches(input, CATEGORY_SEARCH_CANDIDATES);
+  const bestCategoryDistance = categoryMatches[0]?.distance;
+  const topCategories =
+    bestCategoryDistance === undefined
+      ? []
+      : uniqueCategories(categoryMatches.filter((match) => match.distance === bestCategoryDistance).map((match) => match.item));
+  if (bestCategoryDistance !== undefined && bestCategoryDistance <= 1 && topCategories.length === 1) {
+    return { kind: 'category', category: topCategories[0]!, exact: false };
+  }
+
+  const tagMatches = rankFuzzyMatches(input, TAG_SEARCH_CANDIDATES);
+  const bestTagDistance = tagMatches[0]?.distance;
+  const topTags =
+    bestTagDistance === undefined
+      ? []
+      : uniqueTags(tagMatches.filter((match) => match.distance === bestTagDistance).map((match) => match.item));
+  if (bestTagDistance !== undefined && bestTagDistance <= 1 && topTags.length === 1) {
+    const match = topTags[0]!;
+    return { kind: 'tag', category: categoryByKey(match.categoryKey)!, tag: match.tag, exact: false };
+  }
+
+  const merged = [
+    ...categoryMatches.map((match) => ({ key: match.item.key, distance: match.distance })),
+    ...tagMatches.map((match) => ({ key: match.item.categoryKey, distance: match.distance })),
+  ].sort((a, b) => a.distance - b.distance);
+  const suggestionKeys: CategoryKey[] = [];
+  for (const entry of merged) {
+    if (!suggestionKeys.includes(entry.key)) suggestionKeys.push(entry.key);
+    if (suggestionKeys.length >= 3) break;
+  }
+  return suggestionKeys.length
+    ? { kind: 'suggestions', categories: suggestionKeys.map((key) => categoryByKey(key)!) }
+    : { kind: 'none' };
+}
+
+export interface CatalogSearchResult {
+  categories: Category[];
+  tagHits: Array<{ category: Category; tag: string }>;
+  /** Populated only when there were zero real matches, for a "did you mean" nudge. */
+  suggestions: Category[];
+}
+
+/** Powers `/categories <query>` — a browsing search, so it surfaces every reasonably close hit rather than just the best one. */
+export function searchCatalog(query: string): CatalogSearchResult {
+  const input = query.trim();
+  if (!input) return { categories: [], tagHits: [], suggestions: [] };
+
+  const categoryMatches = rankFuzzyMatches(input, CATEGORY_SEARCH_CANDIDATES, 2);
+  const categories = uniqueCategories(categoryMatches.map((match) => match.item)).slice(0, 8);
+
+  const tagMatches = rankFuzzyMatches(input, TAG_SEARCH_CANDIDATES, 2);
+  const tagHits = uniqueTags(tagMatches.map((match) => match.item))
+    .slice(0, 8)
+    .map((entry) => ({ category: categoryByKey(entry.categoryKey)!, tag: entry.tag }));
+
+  if (categories.length || tagHits.length) {
+    return { categories, tagHits, suggestions: [] };
+  }
+
+  const wideCategories = uniqueCategories(rankFuzzyMatches(input, CATEGORY_SEARCH_CANDIDATES, 4).map((match) => match.item));
+  const wideTagCategories = uniqueCategories(
+    rankFuzzyMatches(input, TAG_SEARCH_CANDIDATES, 4).map((match) => categoryByKey(match.item.categoryKey)!),
+  );
+  return { categories: [], tagHits: [], suggestions: uniqueCategories([...wideCategories, ...wideTagCategories]).slice(0, 3) };
+}
+
+function uniqueCategories(categories: Category[]): Category[] {
+  const seen = new Set<CategoryKey>();
+  const result: Category[] = [];
+  for (const category of categories) {
+    if (!seen.has(category.key)) {
+      seen.add(category.key);
+      result.push(category);
+    }
+  }
+  return result;
+}
+
+function uniqueTags(entries: Array<{ tag: string; categoryKey: CategoryKey }>): Array<{ tag: string; categoryKey: CategoryKey }> {
+  const seen = new Set<string>();
+  const result: Array<{ tag: string; categoryKey: CategoryKey }> = [];
+  for (const entry of entries) {
+    const id = `${entry.categoryKey}:${entry.tag}`;
+    if (!seen.has(id)) {
+      seen.add(id);
+      result.push(entry);
+    }
+  }
+  return result;
 }
 
 export function categoryByOpenTdbId(apiId: number) {
