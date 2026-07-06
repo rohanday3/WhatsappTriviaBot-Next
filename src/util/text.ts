@@ -7,6 +7,12 @@ export function answerLetter(index: number): string {
 export function answerIndex(input: string, optionCount: number): number | null {
   const normalized = input.trim().toUpperCase();
   if (normalized.length !== 1) return null;
+  // Digits 1-9 are a faster alternative to letters on a phone keyboard: A-D etc. are
+  // scattered across the QWERTY layout, while 1-9 sit together in one row.
+  if (normalized >= '1' && normalized <= '9') {
+    const digitIndex = Number(normalized) - 1;
+    return digitIndex < optionCount ? digitIndex : null;
+  }
   const index = ANSWER_LETTERS.indexOf(normalized);
   return index >= 0 && index < optionCount ? index : null;
 }

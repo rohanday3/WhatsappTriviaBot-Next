@@ -360,7 +360,7 @@ export class TriviaApplication {
     const overall = levelForCorrect(overallCorrect);
     const overallLine =
       `${overall.tier.icon} *Overall: Level ${overall.tier.level} – ${overall.tier.name}* (${overallCorrect} correct)\n` +
-      `${levelProgressBar(overall)} ${overall.next ? `${overall.correct}/${overall.next.minCorrect} to ${overall.next.name}` : 'Max level!'}`;
+      `${levelProgressBar(overall)} ${overall.correct}/${overall.next.minCorrect} to ${overall.next.name}`;
 
     const categoryRows = this.repository.categoryStats(player.id).filter((row) => row.answered > 0);
     if (!categoryRows.length) {
@@ -374,9 +374,7 @@ export class TriviaApplication {
     const categoryLines = categoryRows.map((row) => {
       const name = categoryByKey(row.category)?.name ?? row.category;
       const progress = levelForCorrect(row.correct);
-      const nextLabel = progress.next
-        ? ` (${progress.correct}/${progress.next.minCorrect} to ${progress.next.name})`
-        : ' (max level!)';
+      const nextLabel = ` (${progress.correct}/${progress.next.minCorrect} to ${progress.next.name})`;
       return `${progress.tier.icon} *${progress.tier.name}* — ${name}: ${row.correct} correct${nextLabel}`;
     });
 
@@ -696,6 +694,7 @@ export class TriviaApplication {
         `*/play*\n` +
         `[category] [difficulty] [count]\n` +
         `Starts a game, all optional\n\n` +
+        `Answer with A/B/C/D or 1/2/3/4 — numbers are faster to tap\n\n` +
         `*/sprint* – fast 5 questions\n` +
         `*/daily* – 1 solo run per day\n` +
         `*/rapidfire* – 15 Q, 7s each\n` +
