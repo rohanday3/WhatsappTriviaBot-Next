@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.8.1
+
+- Updated "about" message.
+
 ## 3.8.0
 
 - Added four new game modes: `/rapidfire` (15 questions, 7s timeout, small scoring multiplier), `/zen` (no timer — the round only advances once it's answered), `/survival` (a wrong answer eliminates you for the rest of the game; in a group, everyone else keeps going until all eliminated), and `/duel` (group-only 1v1, first two players to answer become the duelists, first to 5 correct wins). All four also work as `/play <mode>` tokens.

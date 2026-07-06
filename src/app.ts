@@ -650,8 +650,6 @@ export class TriviaApplication {
       chatId,
       `ℹ️ *${config.botName} v${APP_VERSION}*\n` +
         `A trivia game for WhatsApp — solo or group play, daily challenges, leaderboards and achievements.\n\n` +
-        `Questions come from a live trivia service with backups, so the game keeps going even if one is down.\n` +
-        `This runs over an unofficial WhatsApp connection, so please use a dedicated number and avoid sending it to people who haven't asked for it.\n\n` +
         `👤 Built by Rohan Dayaram\n` +
         `🔗 https://rohandayaram.co.za/`,
     );
