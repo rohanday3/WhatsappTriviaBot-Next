@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.10.2
+
+- Search results and "did you mean" suggestions (`/categories <query>`, `/play`, `/set category`) are now numbered — reply `/play #1` or `/set category #1` to pick one directly instead of retyping its name. Picks are remembered per chat for 10 minutes.
+- Lists that were capped (8 for real search hits, 5 for suggestions) now show a `+N more` hint underneath instead of silently cutting off with no indication more matches exist.
+
+## 3.10.1
+
+- Fixed tag matching only knowing about the ~40 tags curated for narrowing specific categories (e.g. `superheroes` for Comics), so a real, exact tag like `culture` wasn't found by `/categories`, `/play`, or `/set category` even though The Trivia API supports it. Tag search/suggestions now match against the API's full ~900-tag vocabulary (`src/trivia/tag-vocabulary.ts`, snapshotted from `https://the-trivia-api.com/v2/tags`); tags outside the curated set aren't tied to one bot category, so selecting one narrows by topic without forcing a category.
+
 ## 3.10.0
 
 - "Did you mean" suggestions for an unrecognized category (`/play`, `/set category`, `/categories <query>`) now list up to 5 closest categories and, separately, up to 5 matching tags (with the category each belongs to) whenever a tag is at least as close a match as the best category — previously it was a single merged list capped at 3 names with no way to tell a category suggestion from a tag one.
