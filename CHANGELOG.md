@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.10.4
+
+- Fixed the category name shown above a question sometimes not matching what was actually requested (e.g. "Art" showing for a Books game). The Trivia API's cached questions can legitimately belong to more than one bot category (e.g. an arts_and_literature question tagged both "art" and "books"), but the cache only stored one label, which got overwritten each time the question was refetched under a different category — so a later request could inherit a stale label from an earlier, unrelated one. The displayed label is now always the category actually requested for that game.
+
 ## 3.10.3
 
 - Fixed group games basing the early answer reveal on how many players answered the *previous* question instead of who's actually in the chat. It now fetches the live WhatsApp group participant list and only reveals early once every participant has answered; if the list can't be fetched, the question waits the full timeout as before.
