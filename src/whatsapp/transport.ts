@@ -96,6 +96,23 @@ export class WhatsAppTransport {
     });
   }
 
+  /** Number of human participants in the group (the bot's own linked account is excluded), or null if it can't be determined right now. */
+  async groupParticipantCount(chatId: string): Promise<number | null> {
+    if (!chatId.endsWith('@g.us')) return null;
+    try {
+      const metadata = await this.groupMetadata(chatId);
+      const selfId = this.socket?.user?.id ? jidNormalizedUser(this.socket.user.id) : null;
+      return metadata.participants.filter((participant) => {
+        if (!selfId) return true;
+        const ids = [participant.id, participant.phoneNumber].filter(Boolean).map(jidNormalizedUser);
+        return !ids.includes(selfId);
+      }).length;
+    } catch (error) {
+      logger.warn({ err: error, chatId }, 'Could not determine group participant count');
+      return null;
+    }
+  }
+
   async isGroupAdmin(chatId: string, senderId: string, alternateId?: string): Promise<boolean> {
     if (!chatId.endsWith('@g.us')) return true;
     const metadata = await this.groupMetadata(chatId);

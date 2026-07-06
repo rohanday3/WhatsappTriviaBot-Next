@@ -59,6 +59,7 @@ export class TriviaApplication {
       this.repository,
       this.provider,
       (chatId, text) => this.transport.sendText(chatId, text),
+      (chatId) => this.transport.groupParticipantCount(chatId),
     );
     this.healthServer = new HealthServer(() => this.healthSnapshot());
   }

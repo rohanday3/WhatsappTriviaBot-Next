@@ -32,6 +32,7 @@ export class GameEngine {
     private readonly repository: Repository,
     private readonly questions: QuestionProvider,
     private readonly sendText: (chatId: string, text: string) => Promise<void>,
+    private readonly getGroupParticipantCount: (chatId: string) => Promise<number | null> = async () => null,
   ) {}
 
   initialize(): void {
@@ -339,8 +340,8 @@ export class GameEngine {
         if (unlocked.length) game.pendingAchievements.set(player.id, unlocked);
         await this.sendText(chatId, `🔒 ${player.displayName} locked in an answer.`);
         // Zen has no timer to fall back on, so it must reveal as soon as at least one
-        // answer is in rather than waiting for expectedAnswererCount (which starts at 0
-        // on the first question, since there is no prior round to compare against).
+        // answer is in rather than waiting for expectedAnswererCount, which is 0
+        // whenever the participant list couldn't be fetched.
         const revealThreshold = game.mode === 'zen' ? Math.max(1, game.expectedAnswererCount) : game.expectedAnswererCount;
         if (revealThreshold > 0 && game.answeredPlayerIds.size >= revealThreshold) {
           await this.revealQuestion(game);
@@ -433,6 +434,15 @@ export class GameEngine {
       await this.finishGame(game);
       return;
     }
+    // Fetched before the deadline is computed so a slow (uncached) WhatsApp lookup
+    // can't push the actual timer past the questionDeadlineAt recorded for recovery.
+    // Reveal early once every human participant in the group has answered, instead of
+    // always waiting for the full timeout. If the participant list can't be fetched
+    // right now, expectedAnswererCount stays 0 and the question simply runs the full
+    // timeout (see the revealThreshold > 0 guard in answer()).
+    const expectedAnswererCount = game.isGroup
+      ? (await this.getGroupParticipantCount(game.chatId)) ?? 0
+      : 0;
     const openedAt = Date.now();
     const deadlineAt = openedAt + game.timeoutSeconds * 1000;
     game.phase = 'open';
@@ -441,12 +451,7 @@ export class GameEngine {
     game.answeredPlayerIds.clear();
     game.hintedPlayerIds.clear();
     game.pendingAchievements.clear();
-    // Reveal early once everyone who answered the previous question has answered this
-    // one too, instead of always waiting for the full timeout. There is no prior round
-    // to compare against for the first question, so it always runs the full timeout.
-    game.expectedAnswererCount = game.isGroup && game.currentIndex > 0
-      ? this.repository.getRoundResults(game.id, game.currentIndex - 1).length
-      : 0;
+    game.expectedAnswererCount = expectedAnswererCount;
     this.repository.setQuestionOpen(game.id, game.currentIndex, openedAt, deadlineAt);
     await this.sendText(game.chatId, this.formatQuestion(game, game.timeoutSeconds));
     // Zen has no timeout, so there is nothing to schedule — the round only ends when
