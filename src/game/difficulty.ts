@@ -19,7 +19,8 @@ const WEIGHTS_BY_LEVEL: DifficultyWeights[] = [
 
 export function difficultyWeightsForCorrect(correct: number): DifficultyWeights {
   const { tier } = levelForCorrect(correct);
-  return WEIGHTS_BY_LEVEL[tier.level - 1] ?? WEIGHTS_BY_LEVEL[0]!;
+  const index = Math.min(tier.level, WEIGHTS_BY_LEVEL.length) - 1;
+  return WEIGHTS_BY_LEVEL[index]!;
 }
 
 type DifficultyKey = 'easy' | 'medium' | 'hard';

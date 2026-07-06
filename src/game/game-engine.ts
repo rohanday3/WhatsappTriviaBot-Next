@@ -188,7 +188,7 @@ export class GameEngine {
         `🎮 *${modeName} game started!*\n` +
           `• ${questionSet.length} questions\n` +
           `• ${options.mode === 'zen' ? 'No time limit' : `${timeoutSeconds}s per question`}\n` +
-          `• Reply with A, B, C or D` +
+          `• Reply with A, B, C, D (or 1, 2, 3, 4)` +
           modeBlurb +
           `\n${paceLine}`,
       );

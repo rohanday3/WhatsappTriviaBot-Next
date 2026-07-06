@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.9.0
+
+- Removed the level cap: levels 1-7 (Novice through Legend) keep their original thresholds, but past Legend, new "Legend +1", "Legend +2", ... tiers now keep generating indefinitely, each requiring 1.5x the correct answers of the last, so long-term players always have a next level to chase instead of getting stuck at "max level!".
+- Fixed adaptive difficulty silently resetting to the easiest question weights for any level beyond Legend; it was only masked by the previous level cap and would have surfaced as soon as levels became uncapped. Difficulty now holds at Legend's hardest weights for all prestige levels.
+- Added digit shortcuts (`1`, `2`, `3`, `4`) as a faster alternative to `A`/`B`/`C`/`D` for submitting an answer — on a phone's QWERTY keyboard the number row is easier to hit quickly than hunting for scattered letter keys.
+
 ## 3.8.1
 
 - Updated "about" message.
