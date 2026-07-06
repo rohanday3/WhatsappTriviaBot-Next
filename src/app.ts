@@ -32,6 +32,14 @@ import { clamp, percentage } from './util/text.js';
 import { WhatsAppTransport, type ConnectionState } from './whatsapp/transport.js';
 import { APP_VERSION } from './version.js';
 
+/** One numbered entry from a `/categories` search or a "did you mean" list, remembered so a follow-up `#<n>` can pick it without retyping. */
+interface StoredPick {
+  categoryKey: string | null;
+  tag: string | null;
+}
+
+const PICK_TTL_MS = 10 * 60_000;
+
 export class TriviaApplication {
   private readonly db = new Database(config.databasePath);
   private readonly repository = new Repository(this.db);
@@ -40,6 +48,7 @@ export class TriviaApplication {
   private readonly engine: GameEngine;
   private readonly healthServer: HealthServer;
   private readonly commandCooldowns = new Map<string, number>();
+  private readonly lastCategoryPicks = new Map<string, { picks: StoredPick[]; expiresAt: number }>();
   private whatsappState: ConnectionState = 'starting';
   private databaseReady = true;
   private lastMessageAt: number | null = null;
@@ -259,7 +268,10 @@ export class TriviaApplication {
       return;
     }
     const settings = this.repository.getSettings(message.chatId);
-    const { options, notices } = parsePlayOptions(args, settings, forcedMode);
+    const { options, notices, pendingPicks } = parsePlayOptions(args, settings, forcedMode, (index) =>
+      this.resolvePick(message.chatId, index),
+    );
+    if (pendingPicks) this.rememberPicks(message.chatId, pendingPicks);
     if (notices.length) {
       await this.transport.sendText(message.chatId, notices.join('\n'));
     }
@@ -411,7 +423,7 @@ export class TriviaApplication {
       chatId,
       `🗂️ *Categories*\n` +
         `Type the bold word after */play*\n` +
-        `Search: */categories <word>*\n\n${sections}\n\n` +
+        `Search: */categories <word>* — then reply */play #1* to start a result\n\n${sections}\n\n` +
         `🎲 *Blend of topics*\n${builtIn}${custom ? `\n${custom}` : ''}\n\n` +
         `🏷️ *Want something specific?*\n` +
         `Add *tag:word* — a topic, era or person.\n\n` +
@@ -423,22 +435,33 @@ export class TriviaApplication {
     const result = searchCatalog(query);
     if (!result.categories.length && !result.tagHits.length) {
       const hasSuggestions = result.suggestions.categories.length || result.suggestions.tags.length;
-      const suggestionLines = hasSuggestions
-        ? formatDidYouMean(result.suggestions.categories, result.suggestions.tags)
-        : `Type */categories* for the full list.`;
-      await this.transport.sendText(chatId, `🔎 No match for "${query}".\n\n${suggestionLines}`);
+      if (!hasSuggestions) {
+        await this.transport.sendText(chatId, `🔎 No match for "${query}".\n\nType */categories* for the full list.`);
+        return;
+      }
+      const { text, picks } = formatDidYouMean(
+        result.suggestions.categories,
+        result.suggestions.categoriesMoreCount,
+        result.suggestions.tags,
+        result.suggestions.tagsMoreCount,
+        '/play',
+      );
+      this.rememberPicks(chatId, picks);
+      await this.transport.sendText(chatId, `🔎 No match for "${query}".\n\n${text}`);
       return;
     }
+    const { categoryLines, tagLines, picks } = buildPickList(result.categories, result.tagHits);
+    this.rememberPicks(chatId, picks);
     const parts = [`🔎 *Matches for "${query}"*`];
-    if (result.categories.length) {
-      parts.push(`*Categories*\n${result.categories.map((item) => categoryLine(item)).join('\n')}`);
-    }
-    if (result.tagHits.length) {
+    if (categoryLines.length) {
       parts.push(
-        `*Tags*\n${result.tagHits.map((hit) => (hit.category ? `• *${hit.tag}* → *${hit.category.key}*` : `• *${hit.tag}*`)).join('\n')}`,
+        `*Categories*\n${categoryLines.join('\n')}${result.categoriesMoreCount ? `\n_+${result.categoriesMoreCount} more_` : ''}`,
       );
     }
-    parts.push(`Play one with */play <name>*.`);
+    if (tagLines.length) {
+      parts.push(`*Tags*\n${tagLines.join('\n')}${result.tagHitsMoreCount ? `\n_+${result.tagHitsMoreCount} more_` : ''}`);
+    }
+    parts.push(`Play one with */play <name>* or */play #<n>* (e.g. */play #1*).`);
     await this.transport.sendText(chatId, parts.join('\n\n'));
   }
 
@@ -509,11 +532,32 @@ export class TriviaApplication {
             confirmation = `✅ Category is now *mixed*.`;
             break;
           }
+          const pickIndex = parsePickIndex(valueRaw);
+          if (pickIndex !== null) {
+            const pick = this.resolvePick(message.chatId, pickIndex);
+            if (!pick) {
+              throw new Error(`"${valueRaw}" isn't from a recent search. Type */categories <word>* to search again.`);
+            }
+            if (!pick.categoryKey) {
+              throw new Error(
+                `"${pick.tag}" is a tag, not a single category. Use */play tag:${pick.tag}* to play by topic instead.`,
+              );
+            }
+            settings.defaultCategory = pick.categoryKey;
+            confirmation = `✅ Category is now *${pick.categoryKey}*.`;
+            break;
+          }
           const resolution = resolveCategoryInput(valueRaw);
           if (resolution.kind === 'suggestions') {
-            throw new Error(
-              `Unknown category "${valueRaw}".\n${formatDidYouMean(resolution.categories, resolution.tags)}`,
+            const { text, picks } = formatDidYouMean(
+              resolution.categories,
+              resolution.categoriesMoreCount,
+              resolution.tags,
+              resolution.tagsMoreCount,
+              '/set category',
             );
+            this.rememberPicks(message.chatId, picks);
+            throw new Error(`Unknown category "${valueRaw}".\n${text}`);
           }
           if (resolution.kind === 'none') {
             throw new Error(`Unknown category "${valueRaw}". Type */categories* to search.`);
@@ -721,7 +765,8 @@ export class TriviaApplication {
         `*/levels* – levels by category\n\n` +
         `*Info*\n` +
         `*/categories [search]*\n` +
-        `Topics you can play or search\n\n` +
+        `Topics you can play or search\n` +
+        `Reply */play #1* to start a result\n\n` +
         `*/settings* – this chat's setup\n` +
         `*/help* – this message\n` +
         `*/about* – about the bot\n` +
@@ -782,6 +827,24 @@ export class TriviaApplication {
     }
   }
 
+  /** Remembers a numbered list shown to a chat (search results or "did you mean" suggestions) so a later `#<n>` can pick it. */
+  private rememberPicks(chatId: string, picks: StoredPick[]): void {
+    if (!picks.length) return;
+    this.lastCategoryPicks.set(chatId, { picks, expiresAt: Date.now() + PICK_TTL_MS });
+    if (this.lastCategoryPicks.size > 10_000) {
+      const now = Date.now();
+      for (const [key, entry] of this.lastCategoryPicks) {
+        if (entry.expiresAt <= now) this.lastCategoryPicks.delete(key);
+      }
+    }
+  }
+
+  private resolvePick(chatId: string, index: number): StoredPick | null {
+    const entry = this.lastCategoryPicks.get(chatId);
+    if (!entry || entry.expiresAt < Date.now()) return null;
+    return entry.picks[index - 1] ?? null;
+  }
+
   private consumeCooldown(key: string, durationMs: number): boolean {
     const now = Date.now();
     const until = this.commandCooldowns.get(key) ?? 0;
@@ -814,7 +877,8 @@ function parsePlayOptions(
   args: string[],
   settings: ChatSettings,
   forcedMode: PlayOptions['mode'],
-): { options: PlayOptions; notices: string[] } {
+  resolvePick: (index: number) => StoredPick | null,
+): { options: PlayOptions; notices: string[]; pendingPicks: StoredPick[] | null } {
   let mode = forcedMode;
   let questions = forcedModeQuestionCount(forcedMode) ?? settings.questionsPerGame;
   let difficulty = settings.defaultDifficulty;
@@ -822,6 +886,7 @@ function parsePlayOptions(
   let categories: string[] | null = null;
   const tags: string[] = [];
   const notices: string[] = [];
+  let pendingPicks: StoredPick[] | null = null;
   const groups = { ...CATEGORY_GROUPS, ...settings.customGroups };
 
   for (const original of args) {
@@ -834,6 +899,29 @@ function parsePlayOptions(
     }
     if (isDifficulty(token)) {
       difficulty = token;
+      continue;
+    }
+    const pickIndex = parsePickIndex(original);
+    if (pickIndex !== null) {
+      const pick = resolvePick(pickIndex);
+      if (!pick) {
+        notices.push(`❓ "${original}" isn't from a recent search. Type */categories <word>* to search again.`);
+        continue;
+      }
+      if (pick.tag) {
+        tags.push(pick.tag);
+        if (pick.categoryKey) {
+          category = pick.categoryKey;
+          categories = null;
+          notices.push(`🏷️ Playing *${pick.categoryKey}*, narrowed to *${pick.tag}*.`);
+        } else {
+          notices.push(`🏷️ Narrowing to *${pick.tag}*.`);
+        }
+      } else if (pick.categoryKey) {
+        category = pick.categoryKey;
+        categories = null;
+        notices.push(`▶️ Playing *${pick.categoryKey}*.`);
+      }
       continue;
     }
     const numeric = Number.parseInt(token, 10);
@@ -874,9 +962,15 @@ function parsePlayOptions(
         notices.push(`🏷️ "${original}" is a tag.\nNarrowing to *${resolution.tag}*.`);
       }
     } else if (resolution.kind === 'suggestions') {
-      notices.push(
-        `❓ Didn't recognize "${original}".\n${formatDidYouMean(resolution.categories, resolution.tags)}`,
+      const { text, picks } = formatDidYouMean(
+        resolution.categories,
+        resolution.categoriesMoreCount,
+        resolution.tags,
+        resolution.tagsMoreCount,
+        '/play',
       );
+      notices.push(`❓ Didn't recognize "${original}".\n${text}`);
+      pendingPicks = picks;
     } else {
       notices.push(`❓ Didn't recognize "${original}".\nType */categories* to see topics.`);
     }
@@ -888,10 +982,12 @@ function parsePlayOptions(
     categories = null;
     tags.length = 0;
     notices.length = 0; // Daily ignores category/tag entirely, so any related notice above would be misleading.
+    pendingPicks = null;
   }
   return {
     options: { mode, questions, difficulty, category, categories, tags: tags.length ? tags : null },
     notices,
+    pendingPicks,
   };
 }
 
@@ -910,21 +1006,65 @@ const SET_FIELD_LABELS: Record<string, string> = {
 };
 
 /** Drops the redundant display name when it's just the key spelled out (e.g. sports -> Sports), to keep menu lines short. */
-function categoryLine(category: Category): string {
+function categorySuffix(category: Category): string {
   const normalizedName = category.name.toLowerCase().replace(/[^a-z0-9]/g, '');
-  return normalizedName === category.key ? `• *${category.key}*` : `• *${category.key}* — ${category.name}`;
+  return normalizedName === category.key ? `*${category.key}*` : `*${category.key}* — ${category.name}`;
 }
 
-/** Renders a "did you mean" block with separate category/tag sections, e.g. for an unrecognized `/play` or `/set category` value. */
-function formatDidYouMean(categories: Category[], tags: TagSuggestion[]): string {
+function categoryLine(category: Category): string {
+  return `• ${categorySuffix(category)}`;
+}
+
+function tagSuffix(hit: TagSuggestion): string {
+  return hit.category ? `*${hit.tag}* → *${hit.category.key}*` : `*${hit.tag}*`;
+}
+
+/**
+ * Numbers a combined category/tag list (categories first, then tags) and records a matching
+ * `StoredPick` per line, so a later `#<n>` reply can pick one without retyping its name.
+ */
+function buildPickList(
+  categories: Category[],
+  tags: TagSuggestion[],
+): { categoryLines: string[]; tagLines: string[]; picks: StoredPick[] } {
+  const picks: StoredPick[] = [];
+  const categoryLines = categories.map((item) => {
+    picks.push({ categoryKey: item.key, tag: null });
+    return `${picks.length}. ${categorySuffix(item)}`;
+  });
+  const tagLines = tags.map((hit) => {
+    picks.push({ categoryKey: hit.category?.key ?? null, tag: hit.tag });
+    return `${picks.length}. ${tagSuffix(hit)}`;
+  });
+  return { categoryLines, tagLines, picks };
+}
+
+/** Renders a "did you mean" block with separate, numbered category/tag sections, e.g. for an unrecognized `/play` or `/set category` value. */
+function formatDidYouMean(
+  categories: Category[],
+  categoriesMoreCount: number,
+  tags: TagSuggestion[],
+  tagsMoreCount: number,
+  hintCommand: string,
+): { text: string; picks: StoredPick[] } {
+  const { categoryLines, tagLines, picks } = buildPickList(categories, tags);
   const parts: string[] = [];
-  if (categories.length) {
-    parts.push(`category:\n${categories.map((item) => categoryLine(item)).join('\n')}`);
+  if (categoryLines.length) {
+    parts.push(`category:\n${categoryLines.join('\n')}${categoriesMoreCount ? `\n_+${categoriesMoreCount} more_` : ''}`);
   }
-  if (tags.length) {
-    parts.push(`tags:\n${tags.map((hit) => (hit.category ? `• *${hit.tag}* → *${hit.category.key}*` : `• *${hit.tag}*`)).join('\n')}`);
+  if (tagLines.length) {
+    parts.push(`tags:\n${tagLines.join('\n')}${tagsMoreCount ? `\n_+${tagsMoreCount} more_` : ''}`);
   }
-  return `Did you mean:\n${parts.join('\n\n')}`;
+  const hint = picks.length ? `\n\nReply *${hintCommand} #1* to pick one.` : '';
+  return { text: `Did you mean:\n${parts.join('\n\n')}${hint}`, picks };
+}
+
+/** Parses a `#<n>` reference to a numbered "did you mean"/search result, e.g. `#2` -> 2. */
+function parsePickIndex(value: string): number | null {
+  const match = /^#(\d+)$/.exec(value.trim());
+  if (!match) return null;
+  const index = Number.parseInt(match[1]!, 10);
+  return Number.isFinite(index) && index > 0 ? index : null;
 }
 
 function isDifficulty(value: string): value is Difficulty {

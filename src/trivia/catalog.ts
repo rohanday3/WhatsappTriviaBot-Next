@@ -235,11 +235,16 @@ export type TagSuggestion = { tag: string; category: Category | null };
 export type CategoryResolution =
   | { kind: 'category'; category: Category; exact: boolean }
   | { kind: 'tag'; category: Category | null; tag: string; exact: boolean }
-  | { kind: 'suggestions'; categories: Category[]; tags: TagSuggestion[] }
+  | { kind: 'suggestions'; categories: Category[]; categoriesMoreCount: number; tags: TagSuggestion[]; tagsMoreCount: number }
   | { kind: 'none' };
 
 const MAX_CATEGORY_SUGGESTIONS = 5;
 const MAX_TAG_SUGGESTIONS = 5;
+
+/** Caps a list for display while keeping track of how many more matches there were, for a "+N more" hint. */
+function capList<T>(items: T[], max: number): { items: T[]; moreCount: number } {
+  return { items: items.slice(0, max), moreCount: Math.max(0, items.length - max) };
+}
 
 /**
  * Forgiving lookup for anything a user might type where a category is expected:
@@ -284,43 +289,51 @@ export function resolveCategoryInput(rawInput: string): CategoryResolution {
     return { kind: 'tag', category: categoryByKey(match.categoryKey), tag: match.tag, exact: false };
   }
 
-  const suggestedCategories = uniqueCategories(categoryMatches.map((match) => match.item)).slice(0, MAX_CATEGORY_SUGGESTIONS);
+  const { items: suggestedCategories, moreCount: categoriesMoreCount } = capList(
+    uniqueCategories(categoryMatches.map((match) => match.item)),
+    MAX_CATEGORY_SUGGESTIONS,
+  );
 
-  const suggestedTags: TagSuggestion[] =
+  const allSuggestedTags: TagSuggestion[] =
     bestTagDistance !== undefined && (bestCategoryDistance === undefined || bestTagDistance <= bestCategoryDistance)
-      ? uniqueTags(tagMatches.map((match) => match.item))
-          .slice(0, MAX_TAG_SUGGESTIONS)
-          .map((entry) => ({ tag: entry.tag, category: categoryByKey(entry.categoryKey) }))
+      ? uniqueTags(tagMatches.map((match) => match.item)).map((entry) => ({ tag: entry.tag, category: categoryByKey(entry.categoryKey) }))
       : [];
+  const { items: suggestedTags, moreCount: tagsMoreCount } = capList(allSuggestedTags, MAX_TAG_SUGGESTIONS);
 
   return suggestedCategories.length || suggestedTags.length
-    ? { kind: 'suggestions', categories: suggestedCategories, tags: suggestedTags }
+    ? { kind: 'suggestions', categories: suggestedCategories, categoriesMoreCount, tags: suggestedTags, tagsMoreCount }
     : { kind: 'none' };
 }
 
 export interface CatalogSearchResult {
   categories: Category[];
+  categoriesMoreCount: number;
   tagHits: TagSuggestion[];
+  tagHitsMoreCount: number;
   /** Populated only when there were zero real matches, for a "did you mean" nudge. */
-  suggestions: { categories: Category[]; tags: TagSuggestion[] };
+  suggestions: { categories: Category[]; categoriesMoreCount: number; tags: TagSuggestion[]; tagsMoreCount: number };
 }
 
 /** Powers `/categories <query>` — a browsing search, so it surfaces every reasonably close hit rather than just the best one. */
 export function searchCatalog(query: string): CatalogSearchResult {
   const input = query.trim();
-  const noSuggestions = { categories: [], tags: [] };
-  if (!input) return { categories: [], tagHits: [], suggestions: noSuggestions };
+  const noSuggestions = { categories: [], categoriesMoreCount: 0, tags: [], tagsMoreCount: 0 };
+  if (!input) return { categories: [], categoriesMoreCount: 0, tagHits: [], tagHitsMoreCount: 0, suggestions: noSuggestions };
 
   const categoryMatches = rankFuzzyMatches(input, CATEGORY_SEARCH_CANDIDATES, 2);
-  const categories = uniqueCategories(categoryMatches.map((match) => match.item)).slice(0, 8);
+  const { items: categories, moreCount: categoriesMoreCount } = capList(
+    uniqueCategories(categoryMatches.map((match) => match.item)),
+    8,
+  );
 
   const tagMatches = rankFuzzyMatches(input, TAG_SEARCH_CANDIDATES, 2);
-  const tagHits = uniqueTags(tagMatches.map((match) => match.item))
-    .slice(0, 8)
-    .map((entry) => ({ category: categoryByKey(entry.categoryKey), tag: entry.tag }));
+  const { items: tagHits, moreCount: tagHitsMoreCount } = capList(
+    uniqueTags(tagMatches.map((match) => match.item)).map((entry) => ({ category: categoryByKey(entry.categoryKey), tag: entry.tag })),
+    8,
+  );
 
   if (categories.length || tagHits.length) {
-    return { categories, tagHits, suggestions: noSuggestions };
+    return { categories, categoriesMoreCount, tagHits, tagHitsMoreCount, suggestions: noSuggestions };
   }
 
   const wideCategoryMatches = rankFuzzyMatches(input, CATEGORY_SEARCH_CANDIDATES, 4);
@@ -328,15 +341,28 @@ export function searchCatalog(query: string): CatalogSearchResult {
   const bestWideCategoryDistance = wideCategoryMatches[0]?.distance;
   const bestWideTagDistance = wideTagMatches[0]?.distance;
 
-  const suggestedCategories = uniqueCategories(wideCategoryMatches.map((match) => match.item)).slice(0, MAX_CATEGORY_SUGGESTIONS);
-  const suggestedTags: TagSuggestion[] =
+  const { items: suggestedCategories, moreCount: suggestionsCategoriesMoreCount } = capList(
+    uniqueCategories(wideCategoryMatches.map((match) => match.item)),
+    MAX_CATEGORY_SUGGESTIONS,
+  );
+  const allSuggestedTags: TagSuggestion[] =
     bestWideTagDistance !== undefined && (bestWideCategoryDistance === undefined || bestWideTagDistance <= bestWideCategoryDistance)
-      ? uniqueTags(wideTagMatches.map((match) => match.item))
-          .slice(0, MAX_TAG_SUGGESTIONS)
-          .map((entry) => ({ tag: entry.tag, category: categoryByKey(entry.categoryKey) }))
+      ? uniqueTags(wideTagMatches.map((match) => match.item)).map((entry) => ({ tag: entry.tag, category: categoryByKey(entry.categoryKey) }))
       : [];
+  const { items: suggestedTags, moreCount: suggestionsTagsMoreCount } = capList(allSuggestedTags, MAX_TAG_SUGGESTIONS);
 
-  return { categories: [], tagHits: [], suggestions: { categories: suggestedCategories, tags: suggestedTags } };
+  return {
+    categories: [],
+    categoriesMoreCount: 0,
+    tagHits: [],
+    tagHitsMoreCount: 0,
+    suggestions: {
+      categories: suggestedCategories,
+      categoriesMoreCount: suggestionsCategoriesMoreCount,
+      tags: suggestedTags,
+      tagsMoreCount: suggestionsTagsMoreCount,
+    },
+  };
 }
 
 function uniqueCategories(categories: Category[]): Category[] {
