@@ -24,6 +24,7 @@ import {
   resolveCategoryInput,
   searchCatalog,
   type Category,
+  type TagSuggestion,
 } from './trivia/catalog.js';
 import { QuestionProvider } from './trivia/question-provider.js';
 import { localDateKey, startOfWeekMs } from './util/date.js';
@@ -421,10 +422,9 @@ export class TriviaApplication {
   private async sendCategorySearchResults(chatId: string, query: string): Promise<void> {
     const result = searchCatalog(query);
     if (!result.categories.length && !result.tagHits.length) {
-      const suggestionLines = result.suggestions.length
-        ? `Closest match${result.suggestions.length > 1 ? 'es' : ''}:\n${result.suggestions
-            .map((item) => `• *${item.key}* — ${item.name}`)
-            .join('\n')}`
+      const hasSuggestions = result.suggestions.categories.length || result.suggestions.tags.length;
+      const suggestionLines = hasSuggestions
+        ? formatDidYouMean(result.suggestions.categories, result.suggestions.tags)
         : `Type */categories* for the full list.`;
       await this.transport.sendText(chatId, `🔎 No match for "${query}".\n\n${suggestionLines}`);
       return;
@@ -510,7 +510,7 @@ export class TriviaApplication {
           const resolution = resolveCategoryInput(valueRaw);
           if (resolution.kind === 'suggestions') {
             throw new Error(
-              `Unknown category "${valueRaw}". Did you mean: ${resolution.categories.map((item) => item.key).join(', ')}?`,
+              `Unknown category "${valueRaw}".\n${formatDidYouMean(resolution.categories, resolution.tags)}`,
             );
           }
           if (resolution.kind === 'none') {
@@ -864,7 +864,7 @@ function parsePlayOptions(
       notices.push(`🏷️ "${original}" is a tag.\nPlaying *${resolution.category.name}*, narrowed to *${resolution.tag}*.`);
     } else if (resolution.kind === 'suggestions') {
       notices.push(
-        `❓ Didn't recognize "${original}".\nDid you mean: ${resolution.categories.map((item) => item.key).join(', ')}?`,
+        `❓ Didn't recognize "${original}".\n${formatDidYouMean(resolution.categories, resolution.tags)}`,
       );
     } else {
       notices.push(`❓ Didn't recognize "${original}".\nType */categories* to see topics.`);
@@ -902,6 +902,18 @@ const SET_FIELD_LABELS: Record<string, string> = {
 function categoryLine(category: Category): string {
   const normalizedName = category.name.toLowerCase().replace(/[^a-z0-9]/g, '');
   return normalizedName === category.key ? `• *${category.key}*` : `• *${category.key}* — ${category.name}`;
+}
+
+/** Renders a "did you mean" block with separate category/tag sections, e.g. for an unrecognized `/play` or `/set category` value. */
+function formatDidYouMean(categories: Category[], tags: TagSuggestion[]): string {
+  const parts: string[] = [];
+  if (categories.length) {
+    parts.push(`category:\n${categories.map((item) => categoryLine(item)).join('\n')}`);
+  }
+  if (tags.length) {
+    parts.push(`tags:\n${tags.map((hit) => `• *${hit.tag}* → *${hit.category.key}*`).join('\n')}`);
+  }
+  return `Did you mean:\n${parts.join('\n\n')}`;
 }
 
 function isDifficulty(value: string): value is Difficulty {

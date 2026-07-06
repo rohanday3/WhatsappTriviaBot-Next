@@ -219,18 +219,25 @@ const TAG_SEARCH_CANDIDATES: Array<{ item: (typeof TAG_INDEX)[number]; text: str
   text: entry.tag,
 }));
 
+export type TagSuggestion = { tag: string; category: Category };
+
 export type CategoryResolution =
   | { kind: 'category'; category: Category; exact: boolean }
   | { kind: 'tag'; category: Category; tag: string; exact: boolean }
-  | { kind: 'suggestions'; categories: Category[] }
+  | { kind: 'suggestions'; categories: Category[]; tags: TagSuggestion[] }
   | { kind: 'none' };
+
+const MAX_CATEGORY_SUGGESTIONS = 5;
+const MAX_TAG_SUGGESTIONS = 5;
 
 /**
  * Forgiving lookup for anything a user might type where a category is expected:
  * the canonical key/name, a known alias, a typo of any of those (fuzzy-matched),
  * or even a tag word that belongs to exactly one category (e.g. "superheroes"
- * resolves to comics). Falls back to up to three close-looking suggestions
- * rather than a bare "not found" so a typo never dead-ends the user.
+ * resolves to comics). Falls back to up to five close-looking category
+ * suggestions rather than a bare "not found" so a typo never dead-ends the
+ * user; tags are included too whenever they match at least as closely as the
+ * best category match, since they can point at a more precise answer.
  */
 export function resolveCategoryInput(rawInput: string): CategoryResolution {
   const input = rawInput.trim();
@@ -266,17 +273,17 @@ export function resolveCategoryInput(rawInput: string): CategoryResolution {
     return { kind: 'tag', category: categoryByKey(match.categoryKey)!, tag: match.tag, exact: false };
   }
 
-  const merged = [
-    ...categoryMatches.map((match) => ({ key: match.item.key, distance: match.distance })),
-    ...tagMatches.map((match) => ({ key: match.item.categoryKey, distance: match.distance })),
-  ].sort((a, b) => a.distance - b.distance);
-  const suggestionKeys: CategoryKey[] = [];
-  for (const entry of merged) {
-    if (!suggestionKeys.includes(entry.key)) suggestionKeys.push(entry.key);
-    if (suggestionKeys.length >= 3) break;
-  }
-  return suggestionKeys.length
-    ? { kind: 'suggestions', categories: suggestionKeys.map((key) => categoryByKey(key)!) }
+  const suggestedCategories = uniqueCategories(categoryMatches.map((match) => match.item)).slice(0, MAX_CATEGORY_SUGGESTIONS);
+
+  const suggestedTags: TagSuggestion[] =
+    bestTagDistance !== undefined && (bestCategoryDistance === undefined || bestTagDistance <= bestCategoryDistance)
+      ? uniqueTags(tagMatches.map((match) => match.item))
+          .slice(0, MAX_TAG_SUGGESTIONS)
+          .map((entry) => ({ tag: entry.tag, category: categoryByKey(entry.categoryKey)! }))
+      : [];
+
+  return suggestedCategories.length || suggestedTags.length
+    ? { kind: 'suggestions', categories: suggestedCategories, tags: suggestedTags }
     : { kind: 'none' };
 }
 
@@ -284,13 +291,14 @@ export interface CatalogSearchResult {
   categories: Category[];
   tagHits: Array<{ category: Category; tag: string }>;
   /** Populated only when there were zero real matches, for a "did you mean" nudge. */
-  suggestions: Category[];
+  suggestions: { categories: Category[]; tags: TagSuggestion[] };
 }
 
 /** Powers `/categories <query>` — a browsing search, so it surfaces every reasonably close hit rather than just the best one. */
 export function searchCatalog(query: string): CatalogSearchResult {
   const input = query.trim();
-  if (!input) return { categories: [], tagHits: [], suggestions: [] };
+  const noSuggestions = { categories: [], tags: [] };
+  if (!input) return { categories: [], tagHits: [], suggestions: noSuggestions };
 
   const categoryMatches = rankFuzzyMatches(input, CATEGORY_SEARCH_CANDIDATES, 2);
   const categories = uniqueCategories(categoryMatches.map((match) => match.item)).slice(0, 8);
@@ -301,14 +309,23 @@ export function searchCatalog(query: string): CatalogSearchResult {
     .map((entry) => ({ category: categoryByKey(entry.categoryKey)!, tag: entry.tag }));
 
   if (categories.length || tagHits.length) {
-    return { categories, tagHits, suggestions: [] };
+    return { categories, tagHits, suggestions: noSuggestions };
   }
 
-  const wideCategories = uniqueCategories(rankFuzzyMatches(input, CATEGORY_SEARCH_CANDIDATES, 4).map((match) => match.item));
-  const wideTagCategories = uniqueCategories(
-    rankFuzzyMatches(input, TAG_SEARCH_CANDIDATES, 4).map((match) => categoryByKey(match.item.categoryKey)!),
-  );
-  return { categories: [], tagHits: [], suggestions: uniqueCategories([...wideCategories, ...wideTagCategories]).slice(0, 3) };
+  const wideCategoryMatches = rankFuzzyMatches(input, CATEGORY_SEARCH_CANDIDATES, 4);
+  const wideTagMatches = rankFuzzyMatches(input, TAG_SEARCH_CANDIDATES, 4);
+  const bestWideCategoryDistance = wideCategoryMatches[0]?.distance;
+  const bestWideTagDistance = wideTagMatches[0]?.distance;
+
+  const suggestedCategories = uniqueCategories(wideCategoryMatches.map((match) => match.item)).slice(0, MAX_CATEGORY_SUGGESTIONS);
+  const suggestedTags: TagSuggestion[] =
+    bestWideTagDistance !== undefined && (bestWideCategoryDistance === undefined || bestWideTagDistance <= bestWideCategoryDistance)
+      ? uniqueTags(wideTagMatches.map((match) => match.item))
+          .slice(0, MAX_TAG_SUGGESTIONS)
+          .map((entry) => ({ tag: entry.tag, category: categoryByKey(entry.categoryKey)! }))
+      : [];
+
+  return { categories: [], tagHits: [], suggestions: { categories: suggestedCategories, tags: suggestedTags } };
 }
 
 function uniqueCategories(categories: Category[]): Category[] {
