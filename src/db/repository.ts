@@ -13,6 +13,7 @@ import type {
   TriviaSource,
 } from '../types.js';
 import { safeName } from '../util/text.js';
+import { categoryByKey } from '../trivia/catalog.js';
 import { Database } from './database.js';
 
 interface PlayerRow extends Record<string, unknown> {
@@ -484,8 +485,38 @@ export class Repository {
           now,
         ],
       );
+      const questionCategory = input.game.questions[input.game.currentIndex]?.category;
+      const category = questionCategory ? categoryByKey(questionCategory)?.key ?? questionCategory : undefined;
+      if (category) {
+        this.db.run(
+          `INSERT INTO player_category_stats(
+            player_id, category_key, questions_answered, correct_answers, points, updated_at
+          ) VALUES (?, ?, 1, ?, ?, ?)
+          ON CONFLICT(player_id, category_key) DO UPDATE SET
+            questions_answered = player_category_stats.questions_answered + 1,
+            correct_answers = player_category_stats.correct_answers + excluded.correct_answers,
+            points = player_category_stats.points + excluded.points,
+            updated_at = excluded.updated_at`,
+          [input.playerId, category, input.isCorrect ? 1 : 0, input.points, now],
+        );
+      }
       return true;
     });
+  }
+
+  categoryStats(playerId: number): Array<{ category: string; answered: number; correct: number; points: number }> {
+    return this.db.all<{ category_key: string; questions_answered: number; correct_answers: number; points: number }>(
+      `SELECT category_key, questions_answered, correct_answers, points
+       FROM player_category_stats
+       WHERE player_id = ?
+       ORDER BY correct_answers DESC`,
+      [playerId],
+    ).map((row) => ({
+      category: row.category_key,
+      answered: Number(row.questions_answered),
+      correct: Number(row.correct_answers),
+      points: Number(row.points),
+    }));
   }
 
   markHintUsed(gameId: string, playerId: number): void {

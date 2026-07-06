@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.6.0
+
+- Added a per-category leveling system: every correct answer now counts toward that category's level (Novice through Legend), tracked in a new `player_category_stats` table (schema v5). Check progress with the new `/levels` command, which shows your overall level plus a breakdown by category with a progress bar to the next tier.
+- Added 9 new achievements across two new difficulty tiers (Moderate, Hard), on top of the original 7 — including long streaks, big point/correct-answer milestones, a flawless 10+ question game, and category-mastery achievements (`Specialist`, `Renaissance Mind`) built on the new per-category levels. `/achievements` now groups badges by difficulty.
+- Personalized `/about` with author credit (Rohan Dayaram) and website link.
+
 ## 3.5.0
 
 - Reworked the category catalog around what each provider actually supports: OpenTDB's 24 categories are matched by an exact reverse lookup instead of fuzzy name guessing, and a new `food` (Food & Drink) category was added for The Trivia API's category with no OpenTDB equivalent.
