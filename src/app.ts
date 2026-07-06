@@ -434,7 +434,9 @@ export class TriviaApplication {
       parts.push(`*Categories*\n${result.categories.map((item) => categoryLine(item)).join('\n')}`);
     }
     if (result.tagHits.length) {
-      parts.push(`*Tags*\n${result.tagHits.map((hit) => `• *${hit.tag}* → *${hit.category.key}*`).join('\n')}`);
+      parts.push(
+        `*Tags*\n${result.tagHits.map((hit) => (hit.category ? `• *${hit.tag}* → *${hit.category.key}*` : `• *${hit.tag}*`)).join('\n')}`,
+      );
     }
     parts.push(`Play one with */play <name>*.`);
     await this.transport.sendText(chatId, parts.join('\n\n'));
@@ -516,6 +518,11 @@ export class TriviaApplication {
           if (resolution.kind === 'none') {
             throw new Error(`Unknown category "${valueRaw}". Type */categories* to search.`);
           }
+          if (!resolution.category) {
+            throw new Error(
+              `"${valueRaw}" is a tag, not a single category. Use */play tag:${valueRaw}* to play by topic instead.`,
+            );
+          }
           settings.defaultCategory = resolution.category.key;
           confirmation = resolution.exact
             ? `✅ Category is now *${resolution.category.key}*.`
@@ -567,7 +574,7 @@ export class TriviaApplication {
     const unresolved: string[] = [];
     for (const token of requested) {
       const resolution = resolveCategoryInput(token);
-      if (resolution.kind === 'category' || resolution.kind === 'tag') {
+      if ((resolution.kind === 'category' || resolution.kind === 'tag') && resolution.category) {
         resolved.push(resolution.category.key);
       } else {
         unresolved.push(token);
@@ -858,10 +865,14 @@ function parsePlayOptions(
         notices.push(`🔎 Playing *${resolution.category.name}*\n(closest match to "${original}").`);
       }
     } else if (resolution.kind === 'tag') {
-      category = resolution.category.key;
-      categories = null;
       tags.push(resolution.tag);
-      notices.push(`🏷️ "${original}" is a tag.\nPlaying *${resolution.category.name}*, narrowed to *${resolution.tag}*.`);
+      if (resolution.category) {
+        category = resolution.category.key;
+        categories = null;
+        notices.push(`🏷️ "${original}" is a tag.\nPlaying *${resolution.category.name}*, narrowed to *${resolution.tag}*.`);
+      } else {
+        notices.push(`🏷️ "${original}" is a tag.\nNarrowing to *${resolution.tag}*.`);
+      }
     } else if (resolution.kind === 'suggestions') {
       notices.push(
         `❓ Didn't recognize "${original}".\n${formatDidYouMean(resolution.categories, resolution.tags)}`,
@@ -911,7 +922,7 @@ function formatDidYouMean(categories: Category[], tags: TagSuggestion[]): string
     parts.push(`category:\n${categories.map((item) => categoryLine(item)).join('\n')}`);
   }
   if (tags.length) {
-    parts.push(`tags:\n${tags.map((hit) => `• *${hit.tag}* → *${hit.category.key}*`).join('\n')}`);
+    parts.push(`tags:\n${tags.map((hit) => (hit.category ? `• *${hit.tag}* → *${hit.category.key}*` : `• *${hit.tag}*`)).join('\n')}`);
   }
   return `Did you mean:\n${parts.join('\n\n')}`;
 }
