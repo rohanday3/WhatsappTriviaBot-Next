@@ -7,3 +7,4 @@ var/*.log
 var/backups/
 .DS_Store
 .vscode/
+.claude/
