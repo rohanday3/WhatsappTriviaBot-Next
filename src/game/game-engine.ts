@@ -203,23 +203,24 @@ export class GameEngine {
   ): Promise<TriviaQuestion[]> {
     const categories = options.categories?.length ? options.categories : null;
     const singleCategory = categories && categories.length === 1
-      ? categories[0]
+      ? categories[0] ?? null
       : categories
         ? null
         : options.category;
+    const tags = options.tags ?? null;
     const weights = options.difficulty === 'adaptive'
       ? difficultyWeightsForCorrect(this.repository.difficultyLevelCorrectCount(hostPlayerId, singleCategory))
       : null;
 
     if (!categories || categories.length <= 1) {
       const category = categories?.[0] ?? options.category;
-      if (weights) return this.fetchAdaptiveBatch(weights, options.questions, category, options.tags, excluded);
+      if (weights) return this.fetchAdaptiveBatch(weights, options.questions, category, tags, excluded);
       return this.questions.getQuestions({
         count: options.questions,
         category,
         difficulty: options.difficulty,
         excludeHashes: excluded,
-        tags: options.tags,
+        tags,
       });
     }
     const perCategory = Math.floor(options.questions / categories.length);
@@ -231,13 +232,13 @@ export class GameEngine {
       if (want <= 0) continue;
       try {
         const batch = weights
-          ? await this.fetchAdaptiveBatch(weights, want, category, options.tags, seen)
+          ? await this.fetchAdaptiveBatch(weights, want, category, tags, seen)
           : await this.questions.getQuestions({
               count: want,
               category,
               difficulty: options.difficulty,
               excludeHashes: seen,
-              tags: options.tags,
+              tags,
             });
         for (const question of batch.slice(0, want)) {
           seen.add(question.hash);
@@ -256,7 +257,7 @@ export class GameEngine {
     weights: DifficultyWeights,
     count: number,
     category: string | null,
-    tags: string[] | null | undefined,
+    tags: string[] | null,
     excluded: Set<string>,
   ): Promise<TriviaQuestion[]> {
     const counts = splitCountByWeights(count, weights);
