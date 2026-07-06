@@ -65,7 +65,7 @@ const DEFAULT_SETTINGS: ChatSettings = {
   questionsPerGame: config.defaultQuestions,
   timeoutSeconds: config.defaultTimeoutSeconds,
   revealDelayMs: config.defaultRevealDelayMs,
-  defaultDifficulty: 'mixed',
+  defaultDifficulty: 'adaptive',
   defaultCategory: null,
   questionCooldownHours: config.defaultQuestionCooldownHours,
   showRoundLeaderboard: true,
@@ -311,6 +311,12 @@ export class Repository {
          WHERE game_id = ? AND question_position = ?`,
         [row.id, row.current_question_index],
       );
+      const eliminated = row.mode === 'survival'
+        ? this.db.all<{ player_id: number }>(
+            'SELECT DISTINCT player_id FROM answers WHERE game_id = ? AND is_correct = 0',
+            [row.id],
+          )
+        : [];
       return {
         id: row.id,
         chatId: row.chat_id,
@@ -330,6 +336,7 @@ export class Repository {
         hintedPlayerIds: new Set<number>(),
         pendingAchievements: new Map<number, string[]>(),
         expectedAnswererCount: 0,
+        eliminatedPlayerIds: new Set(eliminated.map((item) => item.player_id)),
         timer: null,
       };
     });
@@ -517,6 +524,22 @@ export class Repository {
       correct: Number(row.correct_answers),
       points: Number(row.points),
     }));
+  }
+
+  /** Correct-answer count used to pick an adaptive difficulty mix: category-scoped when a single category is known, else overall. */
+  difficultyLevelCorrectCount(playerId: number, categoryKey: string | null): number {
+    if (categoryKey) {
+      const row = this.db.get<{ correct_answers: number }>(
+        'SELECT correct_answers FROM player_category_stats WHERE player_id = ? AND category_key = ?',
+        [playerId, categoryKey],
+      );
+      if (row) return Number(row.correct_answers);
+    }
+    const row = this.db.get<{ correct_answers: number }>(
+      'SELECT correct_answers FROM players WHERE id = ?',
+      [playerId],
+    );
+    return row ? Number(row.correct_answers) : 0;
   }
 
   markHintUsed(gameId: string, playerId: number): void {

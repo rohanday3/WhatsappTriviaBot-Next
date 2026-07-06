@@ -137,6 +137,18 @@ export class TriviaApplication {
         case 'daily':
           await this.handlePlay(message, player, args, 'daily');
           break;
+        case 'rapidfire':
+          await this.handlePlay(message, player, args, 'rapidfire');
+          break;
+        case 'zen':
+          await this.handlePlay(message, player, args, 'zen');
+          break;
+        case 'survival':
+          await this.handlePlay(message, player, args, 'survival');
+          break;
+        case 'duel':
+          await this.handlePlay(message, player, args, 'duel');
+          break;
         case 'stop':
           await this.handleStop(message, player);
           break;
@@ -231,6 +243,10 @@ export class TriviaApplication {
   ): Promise<void> {
     if (forcedMode === 'daily' && message.isGroup) {
       await this.transport.sendText(message.chatId, '📅 Daily Run is a personal challenge. Message the bot directly and use */daily*.');
+      return;
+    }
+    if (forcedMode === 'duel' && !message.isGroup) {
+      await this.transport.sendText(message.chatId, '⚔️ Duel needs two players — start it in a group chat.');
       return;
     }
     const settings = this.repository.getSettings(message.chatId);
@@ -393,7 +409,7 @@ export class TriviaApplication {
         `Questions per game: *${settings.questionsPerGame}*\n` +
         `Time per question: *${settings.timeoutSeconds}s*\n` +
         `Pause before next question: *${(settings.revealDelayMs / 1000).toFixed(1)}s*\n` +
-        `Difficulty: *${settings.defaultDifficulty}*\n` +
+        `Difficulty: *${settings.defaultDifficulty}*${settings.defaultDifficulty === 'adaptive' ? ' _(matches each player\'s level)_' : ''}\n` +
         `Category: *${settings.defaultCategory ?? 'mixed'}*\n` +
         `Repeat-question cooldown: *${formatCooldown(settings.questionCooldownHours)}*\n` +
         `Hints: *${settings.hintsEnabled ? 'on' : 'off'}*\n` +
@@ -442,7 +458,7 @@ export class TriviaApplication {
           break;
         }
         case 'difficulty':
-          if (!isDifficulty(value)) throw new Error('Difficulty must be mixed, easy, medium or hard');
+          if (!isDifficulty(value)) throw new Error('Difficulty must be adaptive, mixed, easy, medium or hard');
           settings.defaultDifficulty = value;
           break;
         case 'category':
@@ -610,6 +626,10 @@ export class TriviaApplication {
         `*/play [category] [difficulty] [count]* — start a game\n` +
         `*/sprint* — fast 5-question game\n` +
         `*/daily* — one solo challenge per day\n` +
+        `*/rapidfire* — 15 questions, 7s each\n` +
+        `*/zen* — no timer, answer whenever\n` +
+        `*/survival* — one wrong answer and you're out\n` +
+        `*/duel* — group only, first to 5 correct wins\n` +
         hintCommand +
         `*/score* — see the standings so far\n` +
         `*/stop* | */skip* — stop or skip a question (host or admin)\n\n` +
@@ -708,7 +728,7 @@ function parsePlayOptions(
   forcedMode: PlayOptions['mode'],
 ): PlayOptions {
   let mode = forcedMode;
-  let questions = forcedMode === 'daily' || forcedMode === 'sprint' ? 5 : settings.questionsPerGame;
+  let questions = forcedModeQuestionCount(forcedMode) ?? settings.questionsPerGame;
   let difficulty = settings.defaultDifficulty;
   let category = settings.defaultCategory;
   let categories: string[] | null = null;
@@ -717,9 +737,10 @@ function parsePlayOptions(
 
   for (const original of args) {
     const token = original.toLowerCase();
-    if (token === 'sprint' || token === 'daily' || token === 'classic') {
+    if (isGameMode(token)) {
       mode = token;
-      if (token === 'sprint' || token === 'daily') questions = 5;
+      const forcedCount = forcedModeQuestionCount(token);
+      if (forcedCount !== null) questions = forcedCount;
       continue;
     }
     if (isDifficulty(token)) {
@@ -774,7 +795,27 @@ const SET_FIELD_LABELS: Record<string, string> = {
 };
 
 function isDifficulty(value: string): value is Difficulty {
-  return value === 'mixed' || value === 'easy' || value === 'medium' || value === 'hard';
+  return value === 'mixed' || value === 'easy' || value === 'medium' || value === 'hard' || value === 'adaptive';
+}
+
+function isGameMode(value: string): value is PlayOptions['mode'] {
+  return (
+    value === 'classic' ||
+    value === 'sprint' ||
+    value === 'daily' ||
+    value === 'rapidfire' ||
+    value === 'zen' ||
+    value === 'survival' ||
+    value === 'duel'
+  );
+}
+
+/** Question counts that a mode always forces, overriding the chat's configured default. Returns null if the mode leaves the count alone. */
+function forcedModeQuestionCount(mode: PlayOptions['mode']): number | null {
+  if (mode === 'daily' || mode === 'sprint') return 5;
+  if (mode === 'rapidfire') return 15;
+  if (mode === 'duel') return 20;
+  return null;
 }
 
 function parseOnOff(value: string): boolean {

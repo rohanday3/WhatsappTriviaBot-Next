@@ -6,10 +6,11 @@ A from-scratch WhatsApp trivia service designed for group chats, direct messages
 
 - **Group and private games** using the same game engine.
 - **Many simultaneous games** across different chats, with one active game per chat so question streams never collide.
-- **Classic, Sprint, and Daily Run** modes.
+- **Classic, Sprint, Daily Run, Rapid Fire, Zen, Survival, and Duel** modes.
 - **Per-group and global leaderboards**, including weekly views.
 - **Speed-based scoring**, difficulty multipliers, streaks, wins, accuracy, and best scores.
-- **Achievements** such as Fast Fingers, Flawless, and Champion.
+- **Adaptive difficulty by default**, drawing a level-scaled mix of easy/medium/hard questions per player (or per group host) via a per-category leveling system.
+- **Achievements** across three difficulty tiers, such as Fast Fingers, Flawless, and Renaissance Mind.
 - **Optional one-player hints** that remove two wrong options with a point penalty.
 - **Per-chat settings** for question count, timeout, difficulty, category, question cooldown, hints, and round standings.
 - **Custom category mixes** retained from the previous bot concept.
@@ -82,6 +83,10 @@ Category correctness and cooldowns are enforced by the bot even when provider-si
 /play [category] [difficulty] [count]
 /sprint
 /daily
+/rapidfire
+/zen
+/survival
+/duel
 /hint
 /score
 /stop

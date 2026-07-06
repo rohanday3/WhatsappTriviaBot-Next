@@ -7,7 +7,21 @@ import { KeyedQueue } from '../util/keyed-queue.js';
 import { answerIndex, answerLetter, formatDuration } from '../util/text.js';
 import { QuestionProvider } from '../trivia/question-provider.js';
 import { ACHIEVEMENTS, checkAnswerAchievements, checkGameAchievements } from './achievements.js';
+import { difficultyWeightsForCorrect, splitCountByWeights, type DifficultyWeights } from './difficulty.js';
 import { scoreAnswer } from './scoring.js';
+
+/** Duel ends as soon as either player reaches this many correct answers, rather than a fixed question count. */
+const DUEL_WIN_CORRECT_ANSWERS = 5;
+
+const MODE_LABELS: Record<ActiveGame['mode'], string> = {
+  classic: 'Classic',
+  sprint: 'Sprint',
+  daily: 'Daily Run',
+  rapidfire: 'Rapid Fire',
+  zen: 'Zen',
+  survival: 'Survival',
+  duel: 'Duel',
+};
 
 export class GameEngine {
   private readonly games = new Map<string, ActiveGame>();
@@ -45,7 +59,9 @@ export class GameEngine {
     this.recoveredGameIds.clear();
     for (const game of recovered) {
       void this.queue.run(game.chatId, async () => {
-        if (game.phase === 'open') {
+        if (game.phase === 'open' && game.mode === 'zen') {
+          await this.sendText(game.chatId, `🔄 *Game resumed*\n${this.formatQuestion(game, 0)}`);
+        } else if (game.phase === 'open') {
           if ((game.questionDeadlineAt ?? 0) <= Date.now()) {
             await this.revealQuestion(game, '⏱️ Time ran out on that question while the bot was briefly offline.');
           } else {
@@ -102,7 +118,7 @@ export class GameEngine {
       );
       let questionSet: TriviaQuestion[];
       try {
-        questionSet = await this.fetchQuestionSet(options, excluded);
+        questionSet = await this.fetchQuestionSet(options, excluded, player.id);
       } catch (error) {
         const detail = error instanceof Error ? error.message : 'Questions are unavailable';
         await this.sendText(chatId, `⚠️ ${detail}`);
@@ -115,7 +131,11 @@ export class GameEngine {
             `that's all the fresh, matching ones available right now.`,
         );
       }
-      const timeoutSeconds = options.mode === 'sprint' ? Math.min(12, settings.timeoutSeconds) : settings.timeoutSeconds;
+      const timeoutSeconds = options.mode === 'sprint'
+        ? Math.min(12, settings.timeoutSeconds)
+        : options.mode === 'rapidfire'
+          ? Math.min(7, settings.timeoutSeconds)
+          : settings.timeoutSeconds;
       const gameId = this.repository.createGame({
         chatId,
         isGroup,
@@ -148,17 +168,29 @@ export class GameEngine {
         hintedPlayerIds: new Set(),
         pendingAchievements: new Map(),
         expectedAnswererCount: 0,
+        eliminatedPlayerIds: new Set(),
         timer: null,
       };
       this.games.set(chatId, game);
-      const modeName = options.mode === 'sprint' ? 'Sprint' : options.mode === 'daily' ? 'Daily Run' : 'Classic';
+      const modeName = MODE_LABELS[options.mode];
+      const modeBlurb = options.mode === 'survival'
+        ? '\n• One wrong answer and you\'re out'
+        : options.mode === 'duel'
+          ? `\n• First to ${DUEL_WIN_CORRECT_ANSWERS} correct answers wins`
+          : '';
+      const paceLine = isGroup
+        ? '• Everyone in the group can join by answering'
+        : options.mode === 'zen'
+          ? '• Take your time — there is no speed bonus'
+          : '• Faster correct answers earn more points';
       await this.sendText(
         chatId,
         `🎮 *${modeName} game started!*\n` +
           `• ${questionSet.length} questions\n` +
-          `• ${timeoutSeconds}s per question\n` +
-          `• Reply with A, B, C or D\n` +
-          `${isGroup ? '• Everyone in the group can join by answering' : '• Faster correct answers earn more points'}`,
+          `• ${options.mode === 'zen' ? 'No time limit' : `${timeoutSeconds}s per question`}\n` +
+          `• Reply with A, B, C or D` +
+          modeBlurb +
+          `\n${paceLine}`,
       );
       await this.openQuestion(game);
     });
@@ -167,12 +199,24 @@ export class GameEngine {
   private async fetchQuestionSet(
     options: PlayOptions,
     excluded: Set<string>,
+    hostPlayerId: number,
   ): Promise<TriviaQuestion[]> {
     const categories = options.categories?.length ? options.categories : null;
+    const singleCategory = categories && categories.length === 1
+      ? categories[0]
+      : categories
+        ? null
+        : options.category;
+    const weights = options.difficulty === 'adaptive'
+      ? difficultyWeightsForCorrect(this.repository.difficultyLevelCorrectCount(hostPlayerId, singleCategory))
+      : null;
+
     if (!categories || categories.length <= 1) {
+      const category = categories?.[0] ?? options.category;
+      if (weights) return this.fetchAdaptiveBatch(weights, options.questions, category, options.tags, excluded);
       return this.questions.getQuestions({
         count: options.questions,
-        category: categories?.[0] ?? options.category,
+        category,
         difficulty: options.difficulty,
         excludeHashes: excluded,
         tags: options.tags,
@@ -186,19 +230,55 @@ export class GameEngine {
       const want = perCategory + (index < remainder ? 1 : 0);
       if (want <= 0) continue;
       try {
-        const batch = await this.questions.getQuestions({
-          count: want,
-          category,
-          difficulty: options.difficulty,
-          excludeHashes: seen,
-          tags: options.tags,
-        });
+        const batch = weights
+          ? await this.fetchAdaptiveBatch(weights, want, category, options.tags, seen)
+          : await this.questions.getQuestions({
+              count: want,
+              category,
+              difficulty: options.difficulty,
+              excludeHashes: seen,
+              tags: options.tags,
+            });
         for (const question of batch.slice(0, want)) {
           seen.add(question.hash);
           collected.push(question);
         }
       } catch (error) {
         logger.warn({ err: error, category }, 'Skipping a category mix entry with too few fresh questions');
+      }
+    }
+    shuffleInPlace(collected);
+    return collected;
+  }
+
+  /** Splits `count` across easy/medium/hard per `weights` and fetches each tier separately, so the level-based mix is exact. */
+  private async fetchAdaptiveBatch(
+    weights: DifficultyWeights,
+    count: number,
+    category: string | null,
+    tags: string[] | null | undefined,
+    excluded: Set<string>,
+  ): Promise<TriviaQuestion[]> {
+    const counts = splitCountByWeights(count, weights);
+    const seen = new Set(excluded);
+    const collected: TriviaQuestion[] = [];
+    for (const difficulty of ['easy', 'medium', 'hard'] as const) {
+      const want = counts[difficulty];
+      if (want <= 0) continue;
+      try {
+        const batch = await this.questions.getQuestions({
+          count: want,
+          category,
+          difficulty,
+          excludeHashes: seen,
+          tags,
+        });
+        for (const question of batch.slice(0, want)) {
+          seen.add(question.hash);
+          collected.push(question);
+        }
+      } catch (error) {
+        logger.warn({ err: error, category, difficulty }, 'Skipping an adaptive difficulty tier with too few fresh questions');
       }
     }
     shuffleInPlace(collected);
@@ -216,6 +296,17 @@ export class GameEngine {
       if (game.answeredPlayerIds.has(player.id) || this.repository.hasAnswered(game.id, game.currentIndex, player.id)) {
         await this.sendText(chatId, `🔒 ${player.displayName}, your answer is already locked in.`);
         return true;
+      }
+      if (game.mode === 'survival' && game.eliminatedPlayerIds.has(player.id)) {
+        await this.sendText(chatId, `💀 ${player.displayName}, you're already eliminated from this Survival round.`);
+        return true;
+      }
+      if (game.mode === 'duel') {
+        const roster = this.repository.getGameScores(game.id).map((entry) => entry.playerId);
+        if (roster.length >= 2 && !roster.includes(player.id)) {
+          await this.sendText(chatId, `🔒 This Duel is already between the first two players. Start a new game to join in.`);
+          return true;
+        }
       }
       const openedAt = game.questionOpenedAt ?? Date.now();
       const responseMs = Math.max(0, Date.now() - openedAt);
@@ -246,7 +337,11 @@ export class GameEngine {
         // before the reveal. Stash them and announce alongside the reveal instead.
         if (unlocked.length) game.pendingAchievements.set(player.id, unlocked);
         await this.sendText(chatId, `🔒 ${player.displayName} locked in an answer.`);
-        if (game.expectedAnswererCount > 0 && game.answeredPlayerIds.size >= game.expectedAnswererCount) {
+        // Zen has no timer to fall back on, so it must reveal as soon as at least one
+        // answer is in rather than waiting for expectedAnswererCount (which starts at 0
+        // on the first question, since there is no prior round to compare against).
+        const revealThreshold = game.mode === 'zen' ? Math.max(1, game.expectedAnswererCount) : game.expectedAnswererCount;
+        if (revealThreshold > 0 && game.answeredPlayerIds.size >= revealThreshold) {
           await this.revealQuestion(game);
         }
       } else {
@@ -353,7 +448,9 @@ export class GameEngine {
       : 0;
     this.repository.setQuestionOpen(game.id, game.currentIndex, openedAt, deadlineAt);
     await this.sendText(game.chatId, this.formatQuestion(game, game.timeoutSeconds));
-    this.scheduleReveal(game, game.timeoutSeconds * 1000);
+    // Zen has no timeout, so there is nothing to schedule — the round only ends when
+    // an answer comes in (see the early-reveal check in answer()).
+    if (game.mode !== 'zen') this.scheduleReveal(game, game.timeoutSeconds * 1000);
   }
 
   private formatQuestion(game: ActiveGame, seconds: number): string {
@@ -365,7 +462,7 @@ export class GameEngine {
     return (
       `❓ *Question ${game.currentIndex + 1}/${game.questions.length}*\n` +
       `_${question.category} • ${question.difficulty.toUpperCase()}_\n` +
-      `⏱️ ${seconds}s\n\n` +
+      `${game.mode === 'zen' ? '⏱️ No time limit' : `⏱️ ${seconds}s`}\n\n` +
       `*${question.prompt}*\n\n${options}` +
       `${!game.isGroup && game.hintsEnabled && question.options.length >= 4 ? '\n\nType */hint* to remove two wrong options (25% point penalty).' : ''}`
     );
@@ -399,6 +496,12 @@ export class GameEngine {
       .filter((item) => game.pendingAchievements.has(item.playerId))
       .map((item) => `🏅 ${item.name}: ${formatAchievements(game.pendingAchievements.get(item.playerId)!)}`);
     game.pendingAchievements.clear();
+    // Survival eliminations are only decided at reveal time, alongside the correct answer,
+    // so a wrong "locked in" message can never leak that a player is about to be eliminated.
+    const eliminatedNow = game.mode === 'survival'
+      ? round.filter((item) => !item.isCorrect && !game.eliminatedPlayerIds.has(item.playerId))
+      : [];
+    for (const item of eliminatedNow) game.eliminatedPlayerIds.add(item.playerId);
     const lines = [
       prefix,
       `✅ *Answer: ${answerLetter(question.correctIndex)}) ${question.options[question.correctIndex]}*`,
@@ -407,6 +510,7 @@ export class GameEngine {
           ? `\n⚡ *Fastest correct*\n${fastest.join('\n')}`
           : '\nNo correct answers this round.'
         : '',
+      eliminatedNow.length ? `\n💀 *Eliminated*\n${eliminatedNow.map((item) => item.name).join(', ')}` : '',
       achievementLines.length ? `\n${achievementLines.join('\n')}` : '',
     ].filter(Boolean);
     if (game.isGroup && this.repository.getSettings(game.chatId).showRoundLeaderboard) {
@@ -424,6 +528,10 @@ export class GameEngine {
   private async advance(game: ActiveGame): Promise<void> {
     const current = this.games.get(game.chatId);
     if (!current || current.id !== game.id || current.phase !== 'revealing') return;
+    if (this.shouldEndEarly(game)) {
+      await this.finishGame(game);
+      return;
+    }
     game.currentIndex += 1;
     if (game.currentIndex >= game.questions.length) {
       await this.finishGame(game);
@@ -436,6 +544,18 @@ export class GameEngine {
     await this.openQuestion(game);
   }
 
+  /** Survival and Duel can end a game before every fetched question is used up. */
+  private shouldEndEarly(game: ActiveGame): boolean {
+    if (game.mode === 'survival') {
+      const roster = this.repository.getGameScores(game.id);
+      return roster.length > 0 && roster.every((entry) => game.eliminatedPlayerIds.has(entry.playerId));
+    }
+    if (game.mode === 'duel') {
+      return this.repository.getGameScores(game.id).some((entry) => entry.correct >= DUEL_WIN_CORRECT_ANSWERS);
+    }
+    return false;
+  }
+
   private async finishGame(game: ActiveGame): Promise<void> {
     this.clearTimer(game);
     game.phase = 'finished';
@@ -444,6 +564,10 @@ export class GameEngine {
     this.games.delete(game.chatId);
     if (!results.length) return;
     const scores = this.repository.getGameScores(game.id);
+    // Survival/Duel can finish before every fetched question is used, so "how many
+    // questions were actually played" is derived from where the game stopped rather
+    // than the full fetched set (which is what perfect_game/perfect_10 compare against).
+    const totalQuestionsPlayed = Math.min(game.currentIndex + 1, game.questions.length);
     const achievementMessages: string[] = [];
     for (const result of results) {
       const score = scores.find((item) => item.playerId === result.playerId);
@@ -453,7 +577,7 @@ export class GameEngine {
         game.id,
         result.rank === 1,
         score?.correct ?? 0,
-        game.questions.length,
+        totalQuestionsPlayed,
       );
       if (unlocked.length) achievementMessages.push(`${result.name}: ${formatAchievements(unlocked)}`);
     }
