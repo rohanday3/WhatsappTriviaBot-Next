@@ -212,21 +212,14 @@ export class QuestionProvider {
           `or turn down the repeat-question cooldown with */set cooldown*.`,
       );
     }
-    // The Trivia API's cached `category` label is overwritten by whichever
-    // category last fetched a question, but a question can legitimately match
-    // several categoryKeys (e.g. an arts_and_literature question tagged both
-    // "art" and "books"), so a stale label from an earlier request can leak
-    // into a later one for a different category. Once we know which category
-    // this request actually asked for, that's the label that must be shown.
-    // (Local/OpenTDB questions are excluded: their category is unambiguous
-    // and local ones intentionally keep their own display aliases, e.g.
-    // "Movies" for the `film` category.)
+    // The cached `category` label on a question is overwritten by whichever
+    // category last fetched it, but a question can legitimately match several
+    // categoryKeys (e.g. an arts_and_literature question tagged both "art" and
+    // "books"), so the stale label from an earlier request can leak into a
+    // later one for a different category. Once we know which category this
+    // request actually asked for, that's the label that must be shown.
     const labeled = category
-      ? selected.map((question) =>
-          'source' in question && question.source === 'the-trivia-api'
-            ? { ...question, category: category.name }
-            : question,
-        )
+      ? selected.map((question) => ({ ...question, category: category.name }))
       : selected;
     return labeled.map(shuffleQuestion);
   }
