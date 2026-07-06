@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.10.5
+
+- Fixed the 3.10.4 category-label fix overriding the display category for local fallback questions too, which broke their intentional display aliases (e.g. "Movies" for the `film` category, "Technology" for `computers`). The override now only applies to The Trivia API's cached questions, where the staleness problem actually occurs.
+
 ## 3.10.4
 
 - Fixed the category name shown above a question sometimes not matching what was actually requested (e.g. "Art" showing for a Books game). The Trivia API's cached questions can legitimately belong to more than one bot category (e.g. an arts_and_literature question tagged both "art" and "books"), but the cache only stored one label, which got overwritten each time the question was refetched under a different category — so a later request could inherit a stale label from an earlier, unrelated one. The displayed label is now always the category actually requested for that game.
