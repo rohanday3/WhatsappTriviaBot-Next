@@ -30,6 +30,8 @@ const game: ActiveGame = {
   hintsEnabled: true,
   answeredPlayerIds: new Set(),
   hintedPlayerIds: new Set(),
+  pendingAchievements: new Map(),
+  expectedAnswererCount: 0,
   timer: null,
 };
 

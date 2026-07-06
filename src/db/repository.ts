@@ -326,6 +326,8 @@ export class Repository {
         hintsEnabled: Boolean(row.hints_enabled),
         answeredPlayerIds: new Set(answered.map((item) => item.player_id)),
         hintedPlayerIds: new Set<number>(),
+        pendingAchievements: new Map<number, string[]>(),
+        expectedAnswererCount: 0,
         timer: null,
       };
     });

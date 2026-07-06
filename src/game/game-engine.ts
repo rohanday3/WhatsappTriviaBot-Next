@@ -89,22 +89,19 @@ export class GameEngine {
       }
 
       const settings = this.repository.getSettings(chatId);
-      await this.sendText(
-        chatId,
-        `🧠 Preparing fresh ${options.category ? `*${options.category}* ` : ''}questions…`,
-      );
+      const categoryLabel = options.category
+        ? `*${options.category}* `
+        : options.categories?.length
+          ? `*${options.categories.join('/')}* mix `
+          : '';
+      await this.sendText(chatId, `🧠 Preparing fresh ${categoryLabel}questions…`);
       const excluded = this.repository.recentQuestionHashes(
         chatId,
         settings.questionCooldownHours,
       );
       let questionSet: TriviaQuestion[];
       try {
-        questionSet = await this.questions.getQuestions({
-          count: options.questions,
-          category: options.category,
-          difficulty: options.difficulty,
-          excludeHashes: excluded,
-        });
+        questionSet = await this.fetchQuestionSet(options, excluded);
       } catch (error) {
         const detail = error instanceof Error ? error.message : 'Questions are unavailable';
         await this.sendText(chatId, `⚠️ ${detail}`);
@@ -148,6 +145,8 @@ export class GameEngine {
         hintsEnabled: settings.hintsEnabled,
         answeredPlayerIds: new Set(),
         hintedPlayerIds: new Set(),
+        pendingAchievements: new Map(),
+        expectedAnswererCount: 0,
         timer: null,
       };
       this.games.set(chatId, game);
@@ -162,6 +161,45 @@ export class GameEngine {
       );
       await this.openQuestion(game);
     });
+  }
+
+  private async fetchQuestionSet(
+    options: PlayOptions,
+    excluded: Set<string>,
+  ): Promise<TriviaQuestion[]> {
+    const categories = options.categories?.length ? options.categories : null;
+    if (!categories || categories.length <= 1) {
+      return this.questions.getQuestions({
+        count: options.questions,
+        category: categories?.[0] ?? options.category,
+        difficulty: options.difficulty,
+        excludeHashes: excluded,
+      });
+    }
+    const perCategory = Math.floor(options.questions / categories.length);
+    const remainder = options.questions - perCategory * categories.length;
+    const seen = new Set(excluded);
+    const collected: TriviaQuestion[] = [];
+    for (const [index, category] of categories.entries()) {
+      const want = perCategory + (index < remainder ? 1 : 0);
+      if (want <= 0) continue;
+      try {
+        const batch = await this.questions.getQuestions({
+          count: want,
+          category,
+          difficulty: options.difficulty,
+          excludeHashes: seen,
+        });
+        for (const question of batch.slice(0, want)) {
+          seen.add(question.hash);
+          collected.push(question);
+        }
+      } catch (error) {
+        logger.warn({ err: error, category }, 'Skipping a category mix entry with too few fresh questions');
+      }
+    }
+    shuffleInPlace(collected);
+    return collected;
   }
 
   answer(chatId: string, player: Player, rawAnswer: string): Promise<boolean> {
@@ -200,8 +238,14 @@ export class GameEngine {
       );
 
       if (game.isGroup) {
-        const achievementText = unlocked.length ? ` ${formatAchievements(unlocked)}` : '';
-        await this.sendText(chatId, `🔒 ${player.displayName} locked in an answer.${achievementText}`);
+        // Achievements like "first correct" or a streak are only unlocked when the
+        // answer was correct, so announcing them now would leak the correct answer
+        // before the reveal. Stash them and announce alongside the reveal instead.
+        if (unlocked.length) game.pendingAchievements.set(player.id, unlocked);
+        await this.sendText(chatId, `🔒 ${player.displayName} locked in an answer.`);
+        if (game.expectedAnswererCount > 0 && game.answeredPlayerIds.size >= game.expectedAnswererCount) {
+          await this.revealQuestion(game);
+        }
       } else {
         await this.sendText(
           chatId,
@@ -297,6 +341,13 @@ export class GameEngine {
     game.questionDeadlineAt = deadlineAt;
     game.answeredPlayerIds.clear();
     game.hintedPlayerIds.clear();
+    game.pendingAchievements.clear();
+    // Reveal early once everyone who answered the previous question has answered this
+    // one too, instead of always waiting for the full timeout. There is no prior round
+    // to compare against for the first question, so it always runs the full timeout.
+    game.expectedAnswererCount = game.isGroup && game.currentIndex > 0
+      ? this.repository.getRoundResults(game.id, game.currentIndex - 1).length
+      : 0;
     this.repository.setQuestionOpen(game.id, game.currentIndex, openedAt, deadlineAt);
     await this.sendText(game.chatId, this.formatQuestion(game, game.timeoutSeconds));
     this.scheduleReveal(game, game.timeoutSeconds * 1000);
@@ -341,6 +392,10 @@ export class GameEngine {
       const medal = ['🥇', '🥈', '🥉'][index] ?? '•';
       return `${medal} ${item.name} +${item.points} (${formatDuration(item.responseMs)})`;
     });
+    const achievementLines = round
+      .filter((item) => game.pendingAchievements.has(item.playerId))
+      .map((item) => `🏅 ${item.name}: ${formatAchievements(game.pendingAchievements.get(item.playerId)!)}`);
+    game.pendingAchievements.clear();
     const lines = [
       prefix,
       `✅ *Answer: ${answerLetter(question.correctIndex)}) ${question.options[question.correctIndex]}*`,
@@ -349,6 +404,7 @@ export class GameEngine {
           ? `\n⚡ *Fastest correct*\n${fastest.join('\n')}`
           : '\nNo correct answers this round.'
         : '',
+      achievementLines.length ? `\n${achievementLines.join('\n')}` : '',
     ].filter(Boolean);
     if (game.isGroup && this.repository.getSettings(game.chatId).showRoundLeaderboard) {
       const standings = this.repository.getGameScores(game.id).slice(0, 5);
@@ -433,4 +489,11 @@ function formatAchievements(keys: string[]): string {
       return achievement ? `${achievement.icon} *${achievement.name} unlocked!*` : key;
     })
     .join(' ');
+}
+
+function shuffleInPlace<T>(items: T[]): void {
+  for (let i = items.length - 1; i > 0; i -= 1) {
+    const j = randomInt(i + 1);
+    [items[i], items[j]] = [items[j]!, items[i]!];
+  }
 }

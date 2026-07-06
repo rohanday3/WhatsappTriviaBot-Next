@@ -48,6 +48,8 @@ export interface PlayOptions {
   questions: number;
   difficulty: Difficulty;
   category: string | null;
+  /** When a category mix (`group:*`) is selected, the categories to draw questions from. */
+  categories?: string[] | null;
 }
 
 export interface ActiveGame {
@@ -67,6 +69,8 @@ export interface ActiveGame {
   hintsEnabled: boolean;
   answeredPlayerIds: Set<number>;
   hintedPlayerIds: Set<number>;
+  pendingAchievements: Map<number, string[]>;
+  expectedAnswererCount: number;
   timer: NodeJS.Timeout | null;
 }
 

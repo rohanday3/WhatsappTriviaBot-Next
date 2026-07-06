@@ -275,27 +275,38 @@ export class QuestionProvider {
     requestedCategoryKey: string | null,
     difficulty: Difficulty,
   ): Promise<CachedTriviaQuestion[]> {
-    const params = new URLSearchParams({ amount: '50', encode: 'url3986' });
-    if (categoryId) params.set('category', String(categoryId));
-    if (difficulty !== 'mixed') params.set('difficulty', difficulty);
-    if (this.openTdbToken) params.set('token', this.openTdbToken);
+    // OpenTDB errors with response_code 1 ("No Results") if `amount` exceeds the
+    // pool size for the category/difficulty, rather than just returning fewer
+    // results. Narrow categories (e.g. Gadgets, Musicals) can have well under 50
+    // questions in a single difficulty bucket, so step the amount down on that
+    // specific error instead of giving up.
+    let response: OpenTdbResponse | null = null;
+    for (const amount of [50, 20, 10, 5]) {
+      const params = new URLSearchParams({ amount: String(amount), encode: 'url3986' });
+      if (categoryId) params.set('category', String(categoryId));
+      if (difficulty !== 'mixed') params.set('difficulty', difficulty);
+      if (this.openTdbToken) params.set('token', this.openTdbToken);
 
-    let response = await this.serializedJsonCall<OpenTdbResponse>(
-      'fallback',
-      `https://opentdb.com/api.php?${params}`,
-    );
-    if (response.response_code === 4 && this.openTdbToken) {
-      await this.serializedJsonCall<OpenTdbResponse>(
-        'fallback',
-        `https://opentdb.com/api_token.php?command=reset&token=${encodeURIComponent(this.openTdbToken)}`,
-      );
-      response = await this.serializedJsonCall<OpenTdbResponse>(
+      let attempt = await this.serializedJsonCall<OpenTdbResponse>(
         'fallback',
         `https://opentdb.com/api.php?${params}`,
       );
+      if (attempt.response_code === 4 && this.openTdbToken) {
+        await this.serializedJsonCall<OpenTdbResponse>(
+          'fallback',
+          `https://opentdb.com/api_token.php?command=reset&token=${encodeURIComponent(this.openTdbToken)}`,
+        );
+        attempt = await this.serializedJsonCall<OpenTdbResponse>(
+          'fallback',
+          `https://opentdb.com/api.php?${params}`,
+        );
+      }
+      response = attempt;
+      if (attempt.response_code === 0 && attempt.results?.length) break;
+      if (attempt.response_code !== 1) break;
     }
-    if (response.response_code !== 0 || !response.results?.length) {
-      throw new Error(`OpenTDB returned response code ${response.response_code}`);
+    if (!response || response.response_code !== 0 || !response.results?.length) {
+      throw new Error(`OpenTDB returned response code ${response?.response_code ?? 'unknown'}`);
     }
 
     return deduplicateQuestions(response.results.map((item) => {
