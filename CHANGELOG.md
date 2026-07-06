@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.4.0
+
+- Fixed Art and Books questions leaking into each other: The Trivia API's generic `arts_and_literature` tag was substring-matching both categories' alias lists and is now excluded from tag-based category matching.
+- Fixed `/play musical` (and other singular forms) not resolving to the Musicals & Theatre category.
+- Fixed OpenTDB fallback silently returning zero questions for narrow categories (Gadgets, Musicals, and similar) whenever the requested amount exceeded the category's available question pool; the fetch now steps the amount down instead of failing outright.
+- Fixed `/play group:<mix>` only ever drawing questions from one random category in the mix; it now distributes questions across every category in the mix.
+- Fixed group achievement announcements (e.g. "Fast Fingers", streaks) appearing at answer time, which could reveal that a player answered correctly before the round's reveal. Achievements are now announced alongside the answer reveal.
+- Group games now reveal the answer as soon as everyone who answered the previous question has answered the current one, instead of always waiting for the full timeout.
+
 ## 3.3.1
 
 - Fixed `update-whatsapp-trivia` validation failing with `Permission denied` when the unprivileged service account entered the temporary staging directory.

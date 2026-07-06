@@ -80,7 +80,8 @@ function activeGame(id: string, chatId: string, hostPlayerId: number): ActiveGam
     id, chatId, isGroup: true, hostPlayerId, mode: 'classic', status: 'active', phase: 'open',
     questions, currentIndex: 0, questionOpenedAt: Date.now() - 1000,
     questionDeadlineAt: Date.now() + 19_000, timeoutSeconds: 20, revealDelayMs: 500,
-    hintsEnabled: true, answeredPlayerIds: new Set(), hintedPlayerIds: new Set(), timer: null,
+    hintsEnabled: true, answeredPlayerIds: new Set(), hintedPlayerIds: new Set(),
+    pendingAchievements: new Map(), expectedAnswererCount: 0, timer: null,
   };
 }
 

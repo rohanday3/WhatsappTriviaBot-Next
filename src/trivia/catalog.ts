@@ -48,7 +48,15 @@ const CATEGORY_KEY_ALIASES: Record<string, string> = {
   video_games: 'videogames',
   boardgame: 'boardgames',
   board_games: 'boardgames',
+  musical: 'musicals',
 };
+
+// Every question is also tagged with its own broad category (e.g. "arts_and_literature"),
+// which spuriously substring-matches unrelated alias words like "arts" or "literature" below.
+const THE_TRIVIA_BROAD_CATEGORY_TAGS = new Set(
+  ['general_knowledge', 'arts_and_literature', 'film_and_tv', 'food_and_drink', 'geography',
+    'history', 'music', 'science', 'society_and_culture', 'sport_and_leisure'].map(normalizePhrase),
+);
 
 const QUESTION_CATEGORY_ALIASES: Partial<Record<CategoryKey, string[]>> = {
   general: ['General Knowledge'],
@@ -174,7 +182,10 @@ export function theTriviaCategoryLabel(value: string): string {
 export function categoryKeysForTheTrivia(categoryValue: string, tags: string[]): CategoryKey[] {
   const sourceCategory = normalizeApiValue(categoryValue);
   const keys = new Set<CategoryKey>(DIRECT_THE_TRIVIA_CATEGORY_KEYS[sourceCategory] ?? []);
-  const normalizedTags = tags.map(normalizePhrase).filter(Boolean);
+  const normalizedTags = tags
+    .map(normalizePhrase)
+    .filter(Boolean)
+    .filter((tag) => !THE_TRIVIA_BROAD_CATEGORY_TAGS.has(tag));
 
   for (const category of CATEGORIES) {
     const aliases = THE_TRIVIA_TAG_ALIASES[category.key].map(normalizePhrase);

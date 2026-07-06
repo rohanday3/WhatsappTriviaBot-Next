@@ -1,4 +1,3 @@
-import { randomInt } from 'node:crypto';
 import { statfsSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -648,6 +647,7 @@ function parsePlayOptions(
   let questions = forcedMode === 'daily' || forcedMode === 'sprint' ? 5 : settings.questionsPerGame;
   let difficulty = settings.defaultDifficulty;
   let category = settings.defaultCategory;
+  let categories: string[] | null = null;
   const groups = { ...CATEGORY_GROUPS, ...settings.customGroups };
 
   for (const original of args) {
@@ -668,19 +668,24 @@ function parsePlayOptions(
     }
     const groupKey = token.startsWith('group:') ? token.slice(6) : null;
     if (groupKey && groups[groupKey]?.categories.length) {
-      const choices = groups[groupKey]!.categories;
-      category = choices[randomInt(choices.length)] ?? null;
+      // Draw questions from every category in the mix, rather than picking one at random.
+      categories = groups[groupKey]!.categories;
+      category = null;
       continue;
     }
     const matchedCategory = categoryByKey(token);
-    if (matchedCategory) category = matchedCategory.key;
+    if (matchedCategory) {
+      category = matchedCategory.key;
+      categories = null;
+    }
   }
   if (mode === 'daily') {
     questions = 5;
     difficulty = 'mixed';
     category = null;
+    categories = null;
   }
-  return { mode, questions, difficulty, category };
+  return { mode, questions, difficulty, category, categories };
 }
 
 function isDifficulty(value: string): value is Difficulty {
