@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.10.1
+
+- Fixed group games basing the early answer reveal on how many players answered the *previous* question instead of who's actually in the chat. It now fetches the live WhatsApp group participant list and only reveals early once every participant has answered; if the list can't be fetched, the question waits the full timeout as before.
+
 ## 3.10.0
 
 - "Did you mean" suggestions for an unrecognized category (`/play`, `/set category`, `/categories <query>`) now list up to 5 closest categories and, separately, up to 5 matching tags (with the category each belongs to) whenever a tag is at least as close a match as the best category — previously it was a single merged list capped at 3 names with no way to tell a category suggestion from a tag one.
