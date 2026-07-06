@@ -25,7 +25,7 @@ export interface LevelProgress {
 }
 
 export function levelForCorrect(correct: number): LevelProgress {
-  let tier = LEVEL_TIERS[0];
+  let tier: LevelTier = LEVEL_TIERS[0]!;
   for (const candidate of LEVEL_TIERS) {
     if (correct >= candidate.minCorrect) tier = candidate;
   }
