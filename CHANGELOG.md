@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.10.0
+
+- "Did you mean" suggestions for an unrecognized category (`/play`, `/set category`, `/categories <query>`) now list up to 5 closest categories and, separately, up to 5 matching tags (with the category each belongs to) whenever a tag is at least as close a match as the best category — previously it was a single merged list capped at 3 names with no way to tell a category suggestion from a tag one.
+
 ## 3.9.0
 
 - Removed the level cap: levels 1-7 (Novice through Legend) keep their original thresholds, but past Legend, new "Legend +1", "Legend +2", ... tiers now keep generating indefinitely, each requiring 1.5x the correct answers of the last, so long-term players always have a next level to chase instead of getting stuck at "max level!".
