@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.10.3
+
+- Fixed group games basing the early answer reveal on how many players answered the *previous* question instead of who's actually in the chat. It now fetches the live WhatsApp group participant list and only reveals early once every participant has answered; if the list can't be fetched, the question waits the full timeout as before.
+
 ## 3.10.2
 
 - Search results and "did you mean" suggestions (`/categories <query>`, `/play`, `/set category`) are now numbered — reply `/play #1` or `/set category #1` to pick one directly instead of retyping its name. Picks are remembered per chat for 10 minutes.
