@@ -57,6 +57,7 @@ interface CachedQuestionRow extends Record<string, unknown> {
   options_json: string;
   correct_index: number;
   category_keys: string | null;
+  tags: string | null;
 }
 
 const DEFAULT_SETTINGS: ChatSettings = {
@@ -633,6 +634,7 @@ export class Repository {
     categoryKey: string | null;
     difficulty: Difficulty;
     limit: number;
+    tags?: string[];
   }): CachedTriviaQuestion[] {
     if (!input.sources.length || input.limit <= 0) return [];
     const where: string[] = ['q.disabled = 0'];
@@ -654,13 +656,27 @@ export class Repository {
       );
       params.push(input.categoryKey);
     }
+    if (input.tags?.length) {
+      const tagPlaceholders = input.tags.map(() => '?').join(', ');
+      where.push(
+        `EXISTS (
+          SELECT 1 FROM trivia_question_tags filter_tag
+          WHERE filter_tag.question_hash = q.question_hash
+            AND filter_tag.tag IN (${tagPlaceholders})
+        )`,
+      );
+      params.push(...input.tags);
+    }
     params.push(Math.max(1, Math.min(2000, input.limit)));
 
     return this.db.all<CachedQuestionRow>(
       `SELECT q.*,
         (SELECT GROUP_CONCAT(category_key)
          FROM trivia_question_categories all_categories
-         WHERE all_categories.question_hash = q.question_hash) AS category_keys
+         WHERE all_categories.question_hash = q.question_hash) AS category_keys,
+        (SELECT GROUP_CONCAT(tag)
+         FROM trivia_question_tags all_tags
+         WHERE all_tags.question_hash = q.question_hash) AS tags
        FROM trivia_question_cache q
        WHERE ${where.join(' AND ')}
        ORDER BY q.updated_at DESC
@@ -670,6 +686,7 @@ export class Repository {
       sourceId: row.source_id,
       source: row.source,
       categoryKeys: row.category_keys ? row.category_keys.split(',').filter(Boolean) : [],
+      tags: row.tags ? row.tags.split(',').filter(Boolean) : [],
       category: row.category,
       difficulty: row.difficulty,
       prompt: row.prompt,
@@ -723,6 +740,10 @@ export class Repository {
         `INSERT OR IGNORE INTO trivia_question_categories(question_hash, category_key)
          VALUES (?, ?)`,
       );
+      const insertTag = this.db.raw.prepare(
+        `INSERT OR IGNORE INTO trivia_question_tags(question_hash, tag)
+         VALUES (?, ?)`,
+      );
       for (const question of questions) {
         upsertQuestion.run(
           question.hash,
@@ -738,6 +759,9 @@ export class Repository {
         );
         for (const categoryKey of new Set(question.categoryKeys)) {
           if (categoryKey) insertCategory.run(question.hash, categoryKey);
+        }
+        for (const tag of new Set(question.tags)) {
+          if (tag) insertTag.run(question.hash, tag);
         }
       }
     });

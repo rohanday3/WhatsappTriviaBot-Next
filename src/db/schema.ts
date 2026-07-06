@@ -199,6 +199,15 @@ CREATE TABLE IF NOT EXISTS trivia_question_categories (
 CREATE INDEX IF NOT EXISTS idx_trivia_cache_category
   ON trivia_question_categories(category_key, question_hash);
 
+CREATE TABLE IF NOT EXISTS trivia_question_tags (
+  question_hash TEXT NOT NULL REFERENCES trivia_question_cache(question_hash) ON DELETE CASCADE,
+  tag TEXT NOT NULL,
+  PRIMARY KEY (question_hash, tag)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_trivia_cache_tag
+  ON trivia_question_tags(tag, question_hash);
+
 CREATE TABLE IF NOT EXISTS daily_attempts (
   local_date TEXT NOT NULL,
   player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,

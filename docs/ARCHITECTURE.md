@@ -147,9 +147,10 @@ Reliability and quality controls include:
 
 - separate serialized request queues and rate limits for the primary and fallback providers;
 - an API timeout and optional The Trivia API key;
-- OpenTDB session-token acquisition and reset;
-- durable category/difficulty/source-indexed SQLite caching;
-- strict tag validation for narrow categories that share a broad primary category;
+- OpenTDB session-token acquisition and reset, with the requested `amount` stepped down if a narrow category/difficulty combination has too small a pool for OpenTDB's default request size;
+- durable category/difficulty/tag/source-indexed SQLite caching;
+- The Trivia API's `tags` filter is used up front (curated defaults per narrow category, or user-supplied via `/play tag:word`) rather than only validating tags after the fact, and results are still cross-checked against the tags they're returned with;
+- a tag-scoped request only draws from The Trivia API and its cache, since OpenTDB and the bundled question bank have no tag data;
 - persistent per-chat question-history exclusion;
 - a configurable cache-size cap with oldest-entry pruning;
 - no relaxation of category or cooldown rules when a provider is unavailable.

@@ -11,7 +11,8 @@ Starts a Classic game.
 Options may appear in any order:
 
 - category key, such as `sports`, `history`, `film`, or `science`;
-- category mix, such as `group:entertainment`;
+- category mix, such as `group:entertainment`, which draws questions from every category in the mix;
+- tag, such as `tag:renaissance`, to search for something more specific within a category (or across all categories if no category is given). Multiple `tag:` options can be combined;
 - difficulty: `mixed`, `easy`, `medium`, or `hard`;
 - question count from 3 to 30.
 
@@ -22,7 +23,11 @@ Examples:
 /play sports
 /play sports hard 15
 /play group:general medium 10
+/play art tag:renaissance
+/play tag:world_war_2 tag:france
 ```
+
+Tags only work with The Trivia API (the primary question source), since OpenTDB and the bundled question bank have no concept of tags. A tag-scoped game draws only from those sources, so it may offer fewer fresh questions than an untagged game.
 
 `/start` is an alias.
 
@@ -98,7 +103,9 @@ Current achievements:
 
 ### `/categories`
 
-Lists all bot category keys, built-in mixes, and custom mixes for the chat. Provider-specific broad categories are mapped internally and are not exposed as game categories.
+Lists all bot category keys, plus built-in mixes and any custom mixes for the chat. Categories are grouped into sections that mirror The Trivia API's own ten broad categories (General Knowledge, Arts & Literature, Film & Television, Music, Society & Culture, Science, Sport & Leisure, Geography, History, Food & Drink), since that's the primary question source and the menu should match what players will actually get.
+
+OpenTDB, used as a fallback, has its own 24 fixed categories requestable directly by id; those are mapped internally to the same bot category keys and are not shown as a separate list.
 
 Built-in mixes include:
 

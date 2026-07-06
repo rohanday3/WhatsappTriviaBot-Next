@@ -38,6 +38,10 @@ export class Database {
       'INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)',
       [3, Date.now()],
     );
+    this.run(
+      'INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)',
+      [4, Date.now()],
+    );
     logger.info({ databasePath: path }, 'Database ready');
   }
 

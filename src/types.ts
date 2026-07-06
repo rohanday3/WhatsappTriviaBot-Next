@@ -18,6 +18,7 @@ export interface TriviaQuestion {
 export interface CachedTriviaQuestion extends TriviaQuestion {
   source: TriviaSource;
   categoryKeys: string[];
+  tags: string[];
 }
 
 export interface IncomingMessage {
@@ -50,6 +51,8 @@ export interface PlayOptions {
   category: string | null;
   /** When a category mix (`group:*`) is selected, the categories to draw questions from. */
   categories?: string[] | null;
+  /** Free-form tags (e.g. from `/play tag:renaissance`) to narrow questions within a category. */
+  tags?: string[] | null;
 }
 
 export interface ActiveGame {
