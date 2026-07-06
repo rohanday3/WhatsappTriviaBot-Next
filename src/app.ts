@@ -15,7 +15,7 @@ import { GameEngine } from './game/game-engine.js';
 import { HealthServer } from './http/health-server.js';
 import { logger } from './logger.js';
 import type { ChatSettings, Difficulty, HealthSnapshot, IncomingMessage, PlayOptions, Player } from './types.js';
-import { categoryByKey, CATEGORIES, CATEGORY_GROUPS } from './trivia/catalog.js';
+import { categoryByKey, CATEGORIES, CATEGORY_GROUPS, CATEGORY_SECTIONS } from './trivia/catalog.js';
 import { QuestionProvider } from './trivia/question-provider.js';
 import { localDateKey, startOfWeekMs } from './util/date.js';
 import { clamp, percentage } from './util/text.js';
@@ -186,7 +186,8 @@ export class TriviaApplication {
         case 'ping':
           await this.transport.sendText(
             message.chatId,
-            `🏓 Pong — WhatsApp: *${this.transport.connectionState}*, games: *${this.engine.activeGameCount}*`,
+            `🏓 Pong! ${connectionStateLabel(this.transport.connectionState)}, ` +
+              `${this.engine.activeGameCount} game${this.engine.activeGameCount === 1 ? '' : 's'} running right now.`,
           );
           break;
         case 'health':
@@ -315,7 +316,15 @@ export class TriviaApplication {
 
   private async handleCategories(chatId: string): Promise<void> {
     const settings = this.repository.getSettings(chatId);
-    const categories = CATEGORIES.map((item) => `• *${item.key}* — ${item.name}`).join('\n');
+    const categoriesByKey = new Map(CATEGORIES.map((item) => [item.key, item]));
+    const sections = CATEGORY_SECTIONS.map((section) => {
+      const lines = section.categories
+        .map((key) => categoriesByKey.get(key))
+        .filter((item): item is (typeof CATEGORIES)[number] => Boolean(item))
+        .map((item) => `• *${item.key}* — ${item.name}`)
+        .join('\n');
+      return `*${section.title}*\n${lines}`;
+    }).join('\n\n');
     const builtIn = Object.entries(CATEGORY_GROUPS)
       .map(([key, group]) => `• *group:${key}* — ${group.name}`)
       .join('\n');
@@ -324,9 +333,10 @@ export class TriviaApplication {
       .join('\n');
     await this.transport.sendText(
       chatId,
-      `🗂️ *Categories*\n${categories}\n\n🎛️ *Mixes*\n${builtIn}` +
-        `${custom ? `\n${custom}` : ''}` +
-        `\n\nExamples:\n*/play sports hard 10*\n*/play group:entertainment medium*`,
+      `🗂️ *Categories*\n_Type the bold word after */play*._\n\n${sections}\n\n` +
+        `🎲 *Play a blend of topics*\n${builtIn}${custom ? `\n${custom}` : ''}\n\n` +
+        `🏷️ *Want something specific?* Add *tag:word*, e.g. a topic, era, or person.\n\n` +
+        `Examples:\n*/play sports hard 10*\n*/play group:entertainment*\n*/play art tag:renaissance*`,
     );
   }
 
@@ -335,15 +345,16 @@ export class TriviaApplication {
     await this.transport.sendText(
       chatId,
       `⚙️ *Chat settings*\n\n` +
-        `Questions: *${settings.questionsPerGame}*\n` +
-        `Timeout: *${settings.timeoutSeconds}s*\n` +
-        `Reveal delay: *${settings.revealDelayMs}ms*\n` +
+        `Questions per game: *${settings.questionsPerGame}*\n` +
+        `Time per question: *${settings.timeoutSeconds}s*\n` +
+        `Pause before next question: *${(settings.revealDelayMs / 1000).toFixed(1)}s*\n` +
         `Difficulty: *${settings.defaultDifficulty}*\n` +
         `Category: *${settings.defaultCategory ?? 'mixed'}*\n` +
-        `Question cooldown: *${formatCooldown(settings.questionCooldownHours)}*\n` +
+        `Repeat-question cooldown: *${formatCooldown(settings.questionCooldownHours)}*\n` +
         `Hints: *${settings.hintsEnabled ? 'on' : 'off'}*\n` +
         `Round standings: *${settings.showRoundLeaderboard ? 'on' : 'off'}*\n\n` +
-        `Change with */set questions 10*, */set timeout 25*, */set difficulty hard*, ` +
+        `Change any of these with */set <setting> <value>*, e.g.\n` +
+        `*/set questions 10*, */set timeout 25*, */set difficulty hard*, ` +
         `*/set category sports*, */set cooldown 7d*, */set hints off* or */set roundscores off*.` ,
     );
   }
@@ -355,7 +366,10 @@ export class TriviaApplication {
     }
     const [fieldRaw, valueRaw] = args;
     if (!fieldRaw || !valueRaw) {
-      await this.transport.sendText(message.chatId, 'Usage: */set <questions|timeout|difficulty|category|cooldown|hints|roundscores> <value>*');
+      await this.transport.sendText(
+        message.chatId,
+        'Usage: */set <setting> <value>*\nType */settings* to see the full list of settings and current values.',
+      );
       return;
     }
     const field = fieldRaw.toLowerCase();
@@ -406,7 +420,7 @@ export class TriviaApplication {
           settings.showRoundLeaderboard = parseOnOff(value);
           break;
         default:
-          throw new Error('Unknown setting');
+          throw new Error('Unknown setting. Type */settings* to see what you can change.');
       }
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'Invalid setting';
@@ -414,7 +428,8 @@ export class TriviaApplication {
       return;
     }
     this.repository.saveSettings(message.chatId, settings);
-    await this.transport.sendText(message.chatId, `✅ Updated *${field}* to *${value}*.`);
+    const label = SET_FIELD_LABELS[field] ?? field;
+    await this.transport.sendText(message.chatId, `✅ ${label} is now *${value}*.`);
   }
 
   private async handleAddGroup(message: IncomingMessage, player: Player, rawText: string): Promise<void> {
@@ -538,27 +553,30 @@ export class TriviaApplication {
   private async sendHelp(message: IncomingMessage): Promise<void> {
     const hintCommand = message.isGroup
       ? ''
-      : `*/hint* — remove two wrong options (25% fewer points)\n`;
+      : `*/hint* — remove two wrong answers (costs 25% of the points)\n`;
     const adminCommand = this.isBotAdmin(message)
-      ? `*/health [full]* — private server diagnostics\n`
+      ? `*/health [full]* — server status (bot admins only)\n`
       : '';
 
     await this.transport.sendText(
       message.chatId,
       `🎮 *${config.botName} commands*\n\n` +
-        `*/play [category] [difficulty] [count]* — classic game\n` +
+        `*Play*\n` +
+        `*/play [category] [difficulty] [count]* — start a game\n` +
         `*/sprint* — fast 5-question game\n` +
-        `*/daily* — one Daily Run per player\n` +
+        `*/daily* — one solo challenge per day\n` +
         hintCommand +
-        `*/score* — current standings\n` +
-        `*/stop* | */skip* — host/admin controls\n` +
-        `*/leaderboard [group|global] [weekly]*\n` +
-        `*/stats* | */achievements*\n` +
-        `*/categories* | */settings*\n` +
+        `*/score* — see the standings so far\n` +
+        `*/stop* | */skip* — stop or skip a question (host or admin)\n\n` +
+        `*Progress*\n` +
+        `*/leaderboard [group|global] [weekly]* — top players\n` +
+        `*/stats* — your stats | */achievements* — your badges\n\n` +
+        `*Info*\n` +
+        `*/categories* — topics you can play | */settings* — this chat's defaults\n` +
         `*/help* | */about* | */ping*\n` +
         adminCommand +
         `\n` +
-        `Examples: */play sports hard 10* or */play group:entertainment medium*`,
+        `Examples: */play sports hard 10*, */play group:entertainment*, */play art tag:renaissance*`,
     );
   }
 
@@ -566,10 +584,9 @@ export class TriviaApplication {
     await this.transport.sendText(
       chatId,
       `ℹ️ *${config.botName} v${APP_VERSION}*\n` +
-        `A concurrent WhatsApp trivia bot with durable group/global leaderboards, achievements, ` +
-        `daily games and isolated server deployment.\n\n` +
-        `Questions are supplied primarily by The Trivia API, with OpenTDB and a bundled bank as fallbacks.\n` +
-        `It uses an unofficial WhatsApp Web connection, so use a dedicated number and avoid unsolicited messaging.`,
+        `A trivia game for WhatsApp — solo or group play, daily challenges, leaderboards and achievements.\n\n` +
+        `Questions come from a live trivia service with backups, so the game keeps going even if one is down.\n` +
+        `This runs over an unofficial WhatsApp connection, so please use a dedicated number and avoid sending it to people who haven't asked for it.`,
     );
   }
 
@@ -648,6 +665,7 @@ function parsePlayOptions(
   let difficulty = settings.defaultDifficulty;
   let category = settings.defaultCategory;
   let categories: string[] | null = null;
+  const tags: string[] = [];
   const groups = { ...CATEGORY_GROUPS, ...settings.customGroups };
 
   for (const original of args) {
@@ -664,6 +682,11 @@ function parsePlayOptions(
     const numeric = Number.parseInt(token, 10);
     if (/^\d+$/.test(token) && Number.isFinite(numeric) && mode !== 'daily') {
       questions = clamp(numeric, 3, 30);
+      continue;
+    }
+    const tagValue = token.startsWith('tag:') ? token.slice(4) : token.startsWith('tags:') ? token.slice(5) : null;
+    if (tagValue) {
+      tags.push(...tagValue.split(',').map((value) => value.trim()).filter(Boolean));
       continue;
     }
     const groupKey = token.startsWith('group:') ? token.slice(6) : null;
@@ -684,9 +707,24 @@ function parsePlayOptions(
     difficulty = 'mixed';
     category = null;
     categories = null;
+    tags.length = 0;
   }
-  return { mode, questions, difficulty, category, categories };
+  return { mode, questions, difficulty, category, categories, tags: tags.length ? tags : null };
 }
+
+const SET_FIELD_LABELS: Record<string, string> = {
+  questions: 'Questions per game',
+  timeout: 'Time per question',
+  delay: 'Pause before next question',
+  revealdelay: 'Pause before next question',
+  difficulty: 'Difficulty',
+  category: 'Category',
+  cooldown: 'Repeat-question cooldown',
+  questioncooldown: 'Repeat-question cooldown',
+  hints: 'Hints',
+  roundscores: 'Round standings',
+  roundstandings: 'Round standings',
+};
 
 function isDifficulty(value: string): value is Difficulty {
   return value === 'mixed' || value === 'easy' || value === 'medium' || value === 'hard';
@@ -708,10 +746,24 @@ function parseCooldownHours(value: string): number {
   return hours;
 }
 
+function connectionStateLabel(state: ConnectionState): string {
+  switch (state) {
+    case 'connected': return 'WhatsApp is connected ✅';
+    case 'connecting': return 'WhatsApp is connecting…';
+    case 'starting': return 'WhatsApp is starting up…';
+    case 'disconnected': return 'WhatsApp is disconnected ⚠️';
+    case 'logged_out': return 'WhatsApp is logged out ⚠️ (needs re-linking)';
+    default: return `WhatsApp: ${state}`;
+  }
+}
+
 function formatCooldown(hours: number): string {
   if (hours <= 0) return 'off';
-  if (hours % 24 === 0) return `${hours / 24}d`;
-  return `${hours}h`;
+  if (hours % 24 === 0) {
+    const days = hours / 24;
+    return `${days} day${days === 1 ? '' : 's'}`;
+  }
+  return `${hours} hour${hours === 1 ? '' : 's'}`;
 }
 
 function escapeRegExp(value: string): string {

@@ -13,9 +13,11 @@ import {
   categoryByKey,
   categoryByOpenTdbName,
   categoryKeysForTheTrivia,
+  normalizeUserTag,
   questionMatchesCategory,
   theTriviaCategoryLabel,
   theTriviaRequestCategories,
+  theTriviaRequestTags,
 } from './catalog.js';
 
 interface OpenTdbResponse {
@@ -36,6 +38,7 @@ export interface QuestionCacheStore {
     categoryKey: string | null;
     difficulty: Difficulty;
     limit: number;
+    tags?: string[];
   }): CachedTriviaQuestion[];
   upsertCachedQuestions(questions: CachedTriviaQuestion[]): void;
 }
@@ -107,10 +110,18 @@ export class QuestionProvider {
     category: string | null;
     difficulty: Difficulty;
     excludeHashes: Set<string>;
+    tags?: string[] | null;
   }): Promise<TriviaQuestion[]> {
     const count = Math.max(3, Math.min(30, input.count));
     const category = categoryByKey(input.category);
     const categoryKey = category?.key ?? null;
+    // User-supplied tags (e.g. `/play tag:renaissance`) are an explicit, specific
+    // ask that OpenTDB and the bundled local bank have no way to honor, so those
+    // sources are skipped entirely rather than silently returning unrelated
+    // questions. Curated per-category tags narrow the primary request too, but
+    // are just an internal precision improvement, so they don't disable fallback.
+    const userTags = (input.tags ?? []).map(normalizeUserTag).filter(Boolean);
+    const requestTags = userTags.length ? userTags : theTriviaRequestTags(categoryKey ?? '');
     const cacheLimit = Math.max(200, Math.min(2000, count * 30));
     const primaryCandidates: CachedTriviaQuestion[] = [];
     const fallbackCandidates: CachedTriviaQuestion[] = [];
@@ -122,6 +133,7 @@ export class QuestionProvider {
           categoryKey,
           difficulty: input.difficulty,
           limit: cacheLimit,
+          tags: requestTags,
         }),
       );
     }
@@ -135,13 +147,14 @@ export class QuestionProvider {
             categoryKey,
             input.difficulty,
             config.triviaFetchBatchSize,
+            requestTags,
           );
           if (!fresh.length) break;
           this.cacheStore?.upsertCachedQuestions(fresh);
           primaryCandidates.push(...fresh);
         } catch (error) {
           logger.warn(
-            { err: error, category: categoryKey, difficulty: input.difficulty },
+            { err: error, category: categoryKey, difficulty: input.difficulty, tags: requestTags },
             'The Trivia API request failed; trying cached and fallback questions',
           );
           break;
@@ -149,35 +162,37 @@ export class QuestionProvider {
       }
     }
 
-    if (this.cacheStore && this.fallbackEnabled) {
-      fallbackCandidates.push(
-        ...this.cacheStore.getCachedQuestions({
-          sources: ['opentdb'],
-          categoryKey,
-          difficulty: input.difficulty,
-          limit: cacheLimit,
-        }),
-      );
-    }
-
-    const availableBeforeFallback = uniqueAvailable(
-      [...primaryCandidates, ...fallbackCandidates],
-      input.excludeHashes,
-    );
-    if (this.fallbackEnabled && availableBeforeFallback < count) {
-      try {
-        const fresh = await this.fetchOpenTdbBatch(category?.apiId ?? null, categoryKey, input.difficulty);
-        this.cacheStore?.upsertCachedQuestions(fresh);
-        fallbackCandidates.push(...fresh);
-      } catch (error) {
-        logger.warn(
-          { err: error, category: categoryKey, difficulty: input.difficulty },
-          'OpenTDB fallback request failed; using durable cache and bundled questions',
+    if (!userTags.length) {
+      if (this.cacheStore && this.fallbackEnabled) {
+        fallbackCandidates.push(
+          ...this.cacheStore.getCachedQuestions({
+            sources: ['opentdb'],
+            categoryKey,
+            difficulty: input.difficulty,
+            limit: cacheLimit,
+          }),
         );
+      }
+
+      const availableBeforeFallback = uniqueAvailable(
+        [...primaryCandidates, ...fallbackCandidates],
+        input.excludeHashes,
+      );
+      if (this.fallbackEnabled && availableBeforeFallback < count) {
+        try {
+          const fresh = await this.fetchOpenTdbBatch(category?.apiId ?? null, categoryKey, input.difficulty);
+          this.cacheStore?.upsertCachedQuestions(fresh);
+          fallbackCandidates.push(...fresh);
+        } catch (error) {
+          logger.warn(
+            { err: error, category: categoryKey, difficulty: input.difficulty },
+            'OpenTDB fallback request failed; using durable cache and bundled questions',
+          );
+        }
       }
     }
 
-    const localCandidates = this.localQuestions.filter((question) => {
+    const localCandidates = userTags.length ? [] : this.localQuestions.filter((question) => {
       if (category && !questionMatchesCategory(question.category, category.key)) return false;
       if (input.difficulty !== 'mixed' && question.difficulty !== input.difficulty) return false;
       return true;
@@ -190,10 +205,11 @@ export class QuestionProvider {
     );
     if (selected.length < 3) {
       const categoryLabel = category?.name ?? 'the selected filters';
+      const tagSuffix = userTags.length ? ` with tag "${userTags.join(', ')}"` : '';
       throw new Error(
         `Only ${selected.length} fresh question${selected.length === 1 ? '' : 's'} ` +
-          `are available for ${categoryLabel}. Reduce the question count, choose another ` +
-          `category, or shorten the chat question cooldown.`,
+          `are available for ${categoryLabel}${tagSuffix}. Try fewer questions, a different category or tag, ` +
+          `or turn down the repeat-question cooldown with */set cooldown*.`,
       );
     }
     return selected.map(shuffleQuestion);
@@ -203,6 +219,7 @@ export class QuestionProvider {
     requestedCategoryKey: string | null,
     difficulty: Difficulty,
     limit: number,
+    tags: string[],
   ): Promise<CachedTriviaQuestion[]> {
     const params = new URLSearchParams({ limit: String(Math.max(1, Math.min(20, limit))) });
     if (requestedCategoryKey) {
@@ -210,6 +227,7 @@ export class QuestionProvider {
       if (apiCategories.length) params.set('categories', apiCategories.join(','));
     }
     if (difficulty !== 'mixed') params.set('difficulties', difficulty);
+    if (tags.length) params.set('tags', tags.join(','));
 
     const headers: Record<string, string> = { accept: 'application/json' };
     if (config.theTriviaApiKey) headers['x-api-key'] = config.theTriviaApiKey;
@@ -261,6 +279,7 @@ export class QuestionProvider {
       sourceId: `the-trivia-api:${externalId || index}`,
       source: 'the-trivia-api',
       categoryKeys,
+      tags,
       category: requestedCategory?.name ?? theTriviaCategoryLabel(sourceCategory),
       difficulty: normalizeDifficulty(item.difficulty),
       prompt: cleanText(prompt),
@@ -319,6 +338,7 @@ export class QuestionProvider {
         sourceId: `opentdb:${hash(`${prompt}\u0000${correct}`)}`,
         source: 'opentdb' as const,
         categoryKeys: mappedCategoryKey ? [mappedCategoryKey] : [],
+        tags: [],
         category: decodedCategory,
         difficulty: item.difficulty,
         prompt,

@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.5.0
+
+- Reworked the category catalog around what each provider actually supports: OpenTDB's 24 categories are matched by an exact reverse lookup instead of fuzzy name guessing, and a new `food` (Food & Drink) category was added for The Trivia API's category with no OpenTDB equivalent.
+- Added support for The Trivia API's `tags` filter: narrow bot categories (Art, Books, Musicals, Gadgets, etc.) now send a curated set of real tags with the request itself, instead of only validating tags after the fact. This improves both accuracy and yield for those categories.
+- Added a `/play <category> tag:<word>` option (e.g. `/play art tag:renaissance`) for players to search within (or across) categories by topic. Multiple `tag:` options can be combined. Tag-scoped games only draw from The Trivia API and its cache, since OpenTDB and the bundled question bank have no tag data.
+- Questions fetched from The Trivia API now have their tags saved to the durable cache (new `trivia_question_tags` table, schema v4), enabling tag-filtered cache reads.
+- Reorganized `/categories` into sections that mirror The Trivia API's own ten broad categories (General Knowledge, Arts & Literature, Film & Television, Music, Society & Culture, Science, Sport & Leisure, Geography, History, Food & Drink) instead of one long flat list, so the menu matches what players will actually get.
+- Rewrote chat copy across `/help`, `/categories`, `/settings`, `/set`, `/about`, and `/ping` to be plainer and more concise: no more provider names (The Trivia API/OpenTDB), raw connection states, or millisecond values shown to players; `/help` is now grouped into Play/Progress/Info; `/set` confirmations and errors use plain setting names instead of internal field keys.
+
 ## 3.4.0
 
 - Fixed Art and Books questions leaking into each other: The Trivia API's generic `arts_and_literature` tag was substring-matching both categories' alias lists and is now excluded from tag-based category matching.

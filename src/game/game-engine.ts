@@ -47,12 +47,12 @@ export class GameEngine {
       void this.queue.run(game.chatId, async () => {
         if (game.phase === 'open') {
           if ((game.questionDeadlineAt ?? 0) <= Date.now()) {
-            await this.revealQuestion(game, '⏱️ The question expired while the bot was reconnecting.');
+            await this.revealQuestion(game, '⏱️ Time ran out on that question while the bot was briefly offline.');
           } else {
             const remaining = Math.max(1, Math.ceil(((game.questionDeadlineAt ?? 0) - Date.now()) / 1000));
             await this.sendText(
               game.chatId,
-              `🔄 *Game recovered after restart*\n${this.formatQuestion(game, remaining)}`,
+              `🔄 *Game resumed*\n${this.formatQuestion(game, remaining)}`,
             );
             this.scheduleReveal(game, remaining * 1000);
           }
@@ -80,7 +80,7 @@ export class GameEngine {
         return;
       }
       if (this.games.size >= config.maxConcurrentGames) {
-        await this.sendText(chatId, '🚦 The bot is at its concurrent game limit. Please try again shortly.');
+        await this.sendText(chatId, '🚦 Too many games are running right now. Please try again in a moment.');
         return;
       }
       if (options.mode === 'daily' && dailyDate && this.repository.hasDailyAttempt(dailyDate, player.id)) {
@@ -94,7 +94,8 @@ export class GameEngine {
         : options.categories?.length
           ? `*${options.categories.join('/')}* mix `
           : '';
-      await this.sendText(chatId, `🧠 Preparing fresh ${categoryLabel}questions…`);
+      const tagLabel = options.tags?.length ? `(tag: ${options.tags.join(', ')}) ` : '';
+      await this.sendText(chatId, `🧠 Preparing fresh ${categoryLabel}${tagLabel}questions…`);
       const excluded = this.repository.recentQuestionHashes(
         chatId,
         settings.questionCooldownHours,
@@ -110,8 +111,8 @@ export class GameEngine {
       if (questionSet.length < options.questions) {
         await this.sendText(
           chatId,
-          `ℹ️ Starting with *${questionSet.length}* matching fresh questions instead of ` +
-            `*${options.questions}*; no unrelated or cooldown-blocked questions were added.`,
+          `ℹ️ Starting with *${questionSet.length}* questions instead of *${options.questions}* — ` +
+            `that's all the fresh, matching ones available right now.`,
         );
       }
       const timeoutSeconds = options.mode === 'sprint' ? Math.min(12, settings.timeoutSeconds) : settings.timeoutSeconds;
@@ -174,6 +175,7 @@ export class GameEngine {
         category: categories?.[0] ?? options.category,
         difficulty: options.difficulty,
         excludeHashes: excluded,
+        tags: options.tags,
       });
     }
     const perCategory = Math.floor(options.questions / categories.length);
@@ -189,6 +191,7 @@ export class GameEngine {
           category,
           difficulty: options.difficulty,
           excludeHashes: seen,
+          tags: options.tags,
         });
         for (const question of batch.slice(0, want)) {
           seen.add(question.hash);
