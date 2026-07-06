@@ -89,6 +89,7 @@ Category correctness and cooldowns are enforced by the bot even when provider-si
 /leaderboard [group|global] [weekly]
 /stats
 /achievements
+/levels
 /categories
 /settings
 /set cooldown 7d

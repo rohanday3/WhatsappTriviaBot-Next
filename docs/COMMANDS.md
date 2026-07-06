@@ -87,17 +87,36 @@ Shows total points, games, wins, accuracy, streaks, best game, and points in the
 
 ### `/achievements` or `/badges`
 
-Shows locked and unlocked achievements.
+Shows locked and unlocked achievements, grouped by difficulty.
 
-Current achievements:
+🟢 Easy:
 
 - On the Board — first correct answer;
 - Fast Fingers — correct in under three seconds;
 - Heating Up — five-answer streak;
-- Unstoppable — ten-answer streak;
 - Four Figures — 1,000 points;
-- Champion — first win;
-- Flawless — all questions correct in a completed game.
+- Champion — first win.
+
+🟠 Moderate:
+
+- Unstoppable — ten-answer streak;
+- Flawless — all questions correct in a completed game;
+- Regular — play 25 games;
+- Well Read — 250 correct answers;
+- High Roller — 10,000 points;
+- Specialist — reach level 3 (Adept) in any single category.
+
+🔴 Hard:
+
+- Untouchable — twenty-answer streak;
+- Trivia Sage — 1,000 correct answers;
+- Fortune — 100,000 points;
+- Untarnished — all questions correct in a completed game of 10+ questions;
+- Renaissance Mind — reach level 3 (Adept) in 5 different categories.
+
+### `/levels` or `/progress`
+
+Shows your overall level (Novice through Legend, based on total correct answers) plus a per-category breakdown with a progress bar toward the next level in each category you've played. Levels are driven by how many questions you get correct — the same tiers used for the `category_specialist` and `polyglot` achievements above.
 
 ## Categories
 

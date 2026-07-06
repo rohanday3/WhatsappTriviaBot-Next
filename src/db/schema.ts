@@ -153,6 +153,19 @@ CREATE TABLE IF NOT EXISTS player_chat_stats (
 CREATE INDEX IF NOT EXISTS idx_chat_leaderboard
   ON player_chat_stats(chat_id, points DESC, correct_answers DESC);
 
+CREATE TABLE IF NOT EXISTS player_category_stats (
+  player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  category_key TEXT NOT NULL,
+  questions_answered INTEGER NOT NULL DEFAULT 0,
+  correct_answers INTEGER NOT NULL DEFAULT 0,
+  points INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (player_id, category_key)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_player_category_stats_correct
+  ON player_category_stats(player_id, correct_answers DESC);
+
 CREATE TABLE IF NOT EXISTS player_achievements (
   player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
   achievement_key TEXT NOT NULL,

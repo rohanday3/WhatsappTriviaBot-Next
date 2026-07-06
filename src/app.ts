@@ -10,8 +10,9 @@ import {
 } from './admin/health-report.js';
 import { Database } from './db/database.js';
 import { Repository } from './db/repository.js';
-import { ACHIEVEMENTS } from './game/achievements.js';
+import { ACHIEVEMENTS, ACHIEVEMENT_TIER_LABELS, type AchievementTier } from './game/achievements.js';
 import { GameEngine } from './game/game-engine.js';
+import { levelForCorrect, levelProgressBar } from './game/levels.js';
 import { HealthServer } from './http/health-server.js';
 import { logger } from './logger.js';
 import type { ChatSettings, Difficulty, HealthSnapshot, IncomingMessage, PlayOptions, Player } from './types.js';
@@ -161,6 +162,10 @@ export class TriviaApplication {
         case 'badges':
           await this.handleAchievements(message.chatId, player);
           break;
+        case 'levels':
+        case 'progress':
+          await this.handleLevels(message.chatId, player);
+          break;
         case 'categories':
           await this.handleCategories(message.chatId);
           break;
@@ -306,12 +311,52 @@ export class TriviaApplication {
 
   private async handleAchievements(chatId: string, player: Player): Promise<void> {
     const unlocked = new Map(this.repository.achievements(player.id).map((item) => [item.key, item]));
-    const lines = Object.entries(ACHIEVEMENTS).map(([key, item]) =>
-      unlocked.has(key)
-        ? `✅ ${item.icon} *${item.name}* — ${item.description}`
-        : `🔒 ${item.icon} ${item.name} — ${item.description}`,
+    const tiers: AchievementTier[] = ['easy', 'moderate', 'hard'];
+    const sections = tiers
+      .map((tier) => {
+        const lines = Object.entries(ACHIEVEMENTS)
+          .filter(([, item]) => item.tier === tier)
+          .map(([key, item]) =>
+            unlocked.has(key)
+              ? `✅ ${item.icon} *${item.name}* — ${item.description}`
+              : `🔒 ${item.icon} ${item.name} — ${item.description}`,
+          );
+        return lines.length ? `*${ACHIEVEMENT_TIER_LABELS[tier]}*\n${lines.join('\n')}` : '';
+      })
+      .filter(Boolean);
+    await this.transport.sendText(chatId, `🏅 *Achievements*\n\n${sections.join('\n\n')}`);
+  }
+
+  private async handleLevels(chatId: string, player: Player): Promise<void> {
+    const stats = this.repository.playerStats(player.id, chatId);
+    const overallCorrect = stats ? Number(stats.correct_answers) : 0;
+    const overall = levelForCorrect(overallCorrect);
+    const overallLine =
+      `${overall.tier.icon} *Overall: Level ${overall.tier.level} – ${overall.tier.name}* (${overallCorrect} correct)\n` +
+      `${levelProgressBar(overall)} ${overall.next ? `${overall.correct}/${overall.next.minCorrect} to ${overall.next.name}` : 'Max level!'}`;
+
+    const categoryRows = this.repository.categoryStats(player.id).filter((row) => row.answered > 0);
+    if (!categoryRows.length) {
+      await this.transport.sendText(
+        chatId,
+        `📊 *Your Progress*\n\n${overallLine}\n\nPlay a game to start building category progress!`,
+      );
+      return;
+    }
+
+    const categoryLines = categoryRows.map((row) => {
+      const name = categoryByKey(row.category)?.name ?? row.category;
+      const progress = levelForCorrect(row.correct);
+      const nextLabel = progress.next
+        ? ` (${progress.correct}/${progress.next.minCorrect} to ${progress.next.name})`
+        : ' (max level!)';
+      return `${progress.tier.icon} *${progress.tier.name}* — ${name}: ${row.correct} correct${nextLabel}`;
+    });
+
+    await this.transport.sendText(
+      chatId,
+      `📊 *Your Progress*\n\n${overallLine}\n\n*By category*\n${categoryLines.join('\n')}`,
     );
-    await this.transport.sendText(chatId, `🏅 *Achievements*\n\n${lines.join('\n')}`);
   }
 
   private async handleCategories(chatId: string): Promise<void> {
@@ -570,7 +615,7 @@ export class TriviaApplication {
         `*/stop* | */skip* — stop or skip a question (host or admin)\n\n` +
         `*Progress*\n` +
         `*/leaderboard [group|global] [weekly]* — top players\n` +
-        `*/stats* — your stats | */achievements* — your badges\n\n` +
+        `*/stats* — your stats | */achievements* — your badges | */levels* — your levels by category\n\n` +
         `*Info*\n` +
         `*/categories* — topics you can play | */settings* — this chat's defaults\n` +
         `*/help* | */about* | */ping*\n` +
@@ -586,7 +631,9 @@ export class TriviaApplication {
       `ℹ️ *${config.botName} v${APP_VERSION}*\n` +
         `A trivia game for WhatsApp — solo or group play, daily challenges, leaderboards and achievements.\n\n` +
         `Questions come from a live trivia service with backups, so the game keeps going even if one is down.\n` +
-        `This runs over an unofficial WhatsApp connection, so please use a dedicated number and avoid sending it to people who haven't asked for it.`,
+        `This runs over an unofficial WhatsApp connection, so please use a dedicated number and avoid sending it to people who haven't asked for it.\n\n` +
+        `👤 Built by Rohan Dayaram\n` +
+        `🔗 https://rohandayaram.co.za/`,
     );
   }
 
