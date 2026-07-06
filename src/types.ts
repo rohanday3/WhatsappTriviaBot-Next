@@ -1,5 +1,5 @@
-export type Difficulty = 'mixed' | 'easy' | 'medium' | 'hard';
-export type GameMode = 'classic' | 'sprint' | 'daily';
+export type Difficulty = 'mixed' | 'easy' | 'medium' | 'hard' | 'adaptive';
+export type GameMode = 'classic' | 'sprint' | 'daily' | 'rapidfire' | 'zen' | 'survival' | 'duel';
 export type GameStatus = 'active' | 'completed' | 'stopped' | 'interrupted';
 export type QuestionPhase = 'waiting' | 'open' | 'revealing' | 'finished';
 
@@ -8,7 +8,7 @@ export type TriviaSource = 'the-trivia-api' | 'opentdb';
 export interface TriviaQuestion {
   sourceId: string;
   category: string;
-  difficulty: Exclude<Difficulty, 'mixed'>;
+  difficulty: Exclude<Difficulty, 'mixed' | 'adaptive'>;
   prompt: string;
   options: string[];
   correctIndex: number;
@@ -74,6 +74,8 @@ export interface ActiveGame {
   hintedPlayerIds: Set<number>;
   pendingAchievements: Map<number, string[]>;
   expectedAnswererCount: number;
+  /** Survival mode only: players out for the rest of the game after their first wrong answer. */
+  eliminatedPlayerIds: Set<number>;
   timer: NodeJS.Timeout | null;
 }
 

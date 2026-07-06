@@ -32,6 +32,7 @@ const game: ActiveGame = {
   hintedPlayerIds: new Set(),
   pendingAchievements: new Map(),
   expectedAnswererCount: 0,
+  eliminatedPlayerIds: new Set(),
   timer: null,
 };
 
@@ -51,4 +52,11 @@ test('sprint mode has a score multiplier', () => {
   const classic = scoreAnswer({ game, question, responseMs: 1000, usedHint: false });
   const sprint = scoreAnswer({ game: { ...game, mode: 'sprint' }, question, responseMs: 1000, usedHint: false });
   assert.ok(sprint > classic);
+});
+
+test('zen mode has no speed bonus, regardless of response time', () => {
+  const zenGame: ActiveGame = { ...game, mode: 'zen' };
+  const fast = scoreAnswer({ game: zenGame, question, responseMs: 100, usedHint: false });
+  const slow = scoreAnswer({ game: zenGame, question, responseMs: 20_000, usedHint: false });
+  assert.equal(fast, slow);
 });

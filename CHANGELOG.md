@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.8.0
+
+- Added four new game modes: `/rapidfire` (15 questions, 7s timeout, small scoring multiplier), `/zen` (no timer — the round only advances once it's answered), `/survival` (a wrong answer eliminates you for the rest of the game; in a group, everyone else keeps going until all eliminated), and `/duel` (group-only 1v1, first two players to answer become the duelists, first to 5 correct wins). All four also work as `/play <mode>` tokens.
+- Fixed the `perfect_game`/`perfect_10` achievements comparing correct answers against the full fetched question set instead of how many questions the game actually played, which would have made them nearly unreachable in Survival/Duel games that end early.
+
+## 3.7.0
+
+- Added adaptive difficulty: `adaptive` is now the default question difficulty (`/set difficulty adaptive` to opt back in on existing chats), replacing the old flat `mixed` default. It looks up the host's level (per-category if they've played that category before, otherwise overall) and draws a weighted mix of easy/medium/hard questions that gets harder as they level up — mostly easy at Novice, roughly even at Adept, mostly hard at Legend. Works the same way in solo and group games (based on whichever player started the game), and in `/play group:<mix>` and multi-category games. Explicitly requesting a difficulty (e.g. `/play hard`) still overrides it.
+
 ## 3.6.0
 
 - Added a per-category leveling system: every correct answer now counts toward that category's level (Novice through Legend), tracked in a new `player_category_stats` table (schema v5). Check progress with the new `/levels` command, which shows your overall level plus a breakdown by category with a progress bar to the next tier.

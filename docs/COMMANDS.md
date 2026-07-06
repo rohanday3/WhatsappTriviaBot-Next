@@ -13,7 +13,7 @@ Options may appear in any order:
 - category key, such as `sports`, `history`, `film`, or `science`;
 - category mix, such as `group:entertainment`, which draws questions from every category in the mix;
 - tag, such as `tag:renaissance`, to search for something more specific within a category (or across all categories if no category is given). Multiple `tag:` options can be combined;
-- difficulty: `mixed`, `easy`, `medium`, or `hard`;
+- difficulty: `adaptive` (default — scales with the host's level, see below), `mixed`, `easy`, `medium`, or `hard`;
 - question count from 3 to 30.
 
 Examples:
@@ -31,6 +31,10 @@ Tags only work with The Trivia API (the primary question source), since OpenTDB 
 
 `/start` is an alias.
 
+#### Adaptive difficulty
+
+`adaptive` is the default difficulty for any chat that hasn't set a specific one with `/set difficulty`. Instead of a fixed easy/medium/hard/mixed split, it looks up the host's level (see [`/levels`](#levels-or-progress)) — using their level in the specific category being played if they have one, otherwise their overall level — and draws a weighted mix of easy/medium/hard questions that gets harder as they level up: mostly easy with a little medium at Novice, roughly even at Adept, mostly hard at Legend. In a group game, the mix is based on whichever player started the game (the host), and is fixed for the whole game — it isn't recalculated per player as they answer. `/play group:<mix>` and multi-category games use the same mix for every category drawn. Explicitly choosing a difficulty (e.g. `/play hard`) always overrides adaptive for that game.
+
 ### `/sprint [category] [difficulty]`
 
 Starts a five-question speed game. The question timeout is capped at 12 seconds and correct answers receive a Sprint multiplier.
@@ -38,6 +42,22 @@ Starts a five-question speed game. The question timeout is capped at 12 seconds 
 ### `/daily`
 
 Starts a five-question direct-message challenge. Each player receives one attempt per Johannesburg calendar day. It is not available inside groups.
+
+### `/rapidfire [category] [difficulty]`
+
+Starts a 15-question game with the timeout capped at 7 seconds and a small Rapid Fire scoring multiplier — an endurance test rather than Sprint's short burst.
+
+### `/zen [category] [difficulty]`
+
+Starts an untimed game. Each question stays open until it's answered — solo games reveal immediately after your answer, group games reveal once as many players have answered as answered the previous question (or just one, on the first question). There's no speed bonus, so points depend only on the question's difficulty. Because there's no timer, use `/skip` (host or admin) to move on if someone stalls.
+
+### `/survival [category] [difficulty]`
+
+Starts a game where a wrong answer eliminates you for the rest of that game — in a group, everyone else keeps playing. The game ends as soon as everyone who's played so far is eliminated, or the questions run out, whichever comes first.
+
+### `/duel [category] [difficulty]`
+
+Starts a group-only 1v1: the first two players to answer a question become the duelists, and anyone else is turned away. First to 5 correct answers wins; if nobody reaches 5 before the questions run out, whoever's ahead wins. Not available in a direct message (there's no second player).
 
 ## Answering
 
@@ -168,9 +188,9 @@ Sets seconds per question.
 
 Sets milliseconds between an answer reveal and the next question.
 
-### `/set difficulty <mixed|easy|medium|hard>`
+### `/set difficulty <adaptive|mixed|easy|medium|hard>`
 
-Sets the default difficulty.
+Sets the default difficulty. `adaptive` (the default) scales question difficulty with the host's level instead of a fixed split — see [Adaptive difficulty](#adaptive-difficulty) above.
 
 ### `/set category <category|mixed>`
 
