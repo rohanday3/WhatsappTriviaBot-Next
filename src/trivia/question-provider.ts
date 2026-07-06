@@ -212,7 +212,16 @@ export class QuestionProvider {
           `or turn down the repeat-question cooldown with */set cooldown*.`,
       );
     }
-    return selected.map(shuffleQuestion);
+    // The cached `category` label on a question is overwritten by whichever
+    // category last fetched it, but a question can legitimately match several
+    // categoryKeys (e.g. an arts_and_literature question tagged both "art" and
+    // "books"), so the stale label from an earlier request can leak into a
+    // later one for a different category. Once we know which category this
+    // request actually asked for, that's the label that must be shown.
+    const labeled = category
+      ? selected.map((question) => ({ ...question, category: category.name }))
+      : selected;
+    return labeled.map(shuffleQuestion);
   }
 
   private async fetchPrimaryBatch(
