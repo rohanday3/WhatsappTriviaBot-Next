@@ -13,6 +13,15 @@ import { scoreAnswer } from './scoring.js';
 /** Duel ends as soon as either player reaches this many correct answers, rather than a fixed question count. */
 const DUEL_WIN_CORRECT_ANSWERS = 5;
 
+/**
+ * An answer sent this far (or more) before the current question was opened is treated as a
+ * leftover response to an earlier question and ignored, so a late answer can't be credited to
+ * the next question. The grace absorbs WhatsApp's second-granularity send timestamps (and minor
+ * clock skew) so a genuine fast answer is never dropped; it stays below the default reveal delay
+ * so answers that really belong to the previous question are still rejected.
+ */
+const STALE_ANSWER_GRACE_MS = 2000;
+
 const MODE_LABELS: Record<ActiveGame['mode'], string> = {
   classic: 'Classic',
   sprint: 'Sprint',
@@ -287,10 +296,16 @@ export class GameEngine {
     return collected;
   }
 
-  answer(chatId: string, player: Player, rawAnswer: string): Promise<boolean> {
+  answer(chatId: string, player: Player, rawAnswer: string, sentAtMs = Date.now()): Promise<boolean> {
     return this.queue.run(chatId, async () => {
       const game = this.games.get(chatId);
       if (!game || game.phase !== 'open') return false;
+      // Drop answers that were sent before this question was even shown: they belong to an
+      // earlier question and only reached us after the game advanced. Without this guard a
+      // late answer to question N would be recorded against N+1.
+      if (game.questionOpenedAt !== null && sentAtMs < game.questionOpenedAt - STALE_ANSWER_GRACE_MS) {
+        return false;
+      }
       const question = game.questions[game.currentIndex];
       if (!question) return false;
       const selected = answerIndex(rawAnswer, question.options.length);

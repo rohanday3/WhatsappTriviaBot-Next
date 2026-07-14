@@ -136,7 +136,7 @@ export class TriviaApplication {
       }
 
       if (!text.startsWith(config.commandPrefix)) {
-        await this.engine.answer(message.chatId, player, text);
+        await this.engine.answer(message.chatId, player, text, message.timestampMs);
         return;
       }
 

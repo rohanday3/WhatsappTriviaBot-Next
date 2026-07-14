@@ -2,6 +2,7 @@
 
 ## 3.10.6
 
+- Fixed an answer sent just as a question's timer ran out sometimes being counted for the *next* question. If the message only reached the bot after the round had already revealed and advanced, it was recorded against whatever question was open by then. Answers are now matched to the question that was on screen when they were sent (using the message's send timestamp), so a late answer to one question can no longer leak into the next.
 - Fixed some recipients (most often on iOS) seeing "Waiting for this message. This may take a while." in place of the bot's replies. When a recipient's device fails to decrypt a message it asks the bot to re-send it via a retry receipt, but the socket's `getMessage` callback always returned `undefined`, so Baileys had nothing to re-send and the message stayed stuck. Outbound messages are now cached briefly (10 min, keyed by message ID) so these decryption retries can be answered.
 
 ## 3.10.5
