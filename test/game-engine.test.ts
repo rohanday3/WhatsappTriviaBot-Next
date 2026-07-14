@@ -64,6 +64,44 @@ test('runs games concurrently across chats but refuses a second game in the same
 });
 
 
+test('ignores a late answer that only reaches the bot after the game moved to the next question', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'trivia-late-'));
+  const db = new Database(join(directory, 'game.db'));
+  const repository = new Repository(db);
+  const sent: Array<{ chatId: string; text: string }> = [];
+  const engine = new GameEngine(
+    repository,
+    new FakeProvider() as unknown as QuestionProvider,
+    async (chatId, text) => { sent.push({ chatId, text }); },
+  );
+  engine.initialize();
+  const chat = 'late@s.whatsapp.net';
+  try {
+    repository.touchChat(chat, false);
+    const player = repository.upsertPlayer(chat, undefined, 'Late');
+    await engine.startGame(chat, false, player, { mode: 'classic', questions: 3, difficulty: 'mixed', category: null });
+
+    const game = engine.gameForChat(chat)!;
+    const openedAt = game.questionOpenedAt!;
+
+    // A message the player actually sent while an earlier question was on screen, but
+    // that only reached the bot after this question opened, must not be credited here.
+    const staleSendMs = openedAt - 5000;
+    assert.equal(await engine.answer(chat, player, 'A', staleSendMs), false);
+    assert.equal(repository.getGameScores(game.id).length, 0);
+
+    // A genuine answer to the current question is still accepted.
+    assert.equal(await engine.answer(chat, player, 'A', openedAt + 200), true);
+    assert.equal(repository.getGameScores(game.id)[0]!.score > 0, true);
+
+    await engine.stopGame(chat);
+  } finally {
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+
 test('offers hints only when they can remove two wrong options without revealing the answer', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'trivia-hint-'));
   const db = new Database(join(directory, 'game.db'));

@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.10.6
+
+- Fixed an answer sent just as a question's timer ran out sometimes being counted for the *next* question. If the message only reached the bot after the round had already revealed and advanced, it was recorded against whatever question was open by then. Answers are now matched to the question that was on screen when they were sent (using the message's send timestamp), so a late answer to one question can no longer leak into the next.
+
 ## 3.10.5
 
 - Fixed the 3.10.4 category-label fix overriding the display category for local fallback questions too, which broke their intentional display aliases (e.g. "Movies" for the `film` category, "Technology" for `computers`). The override now only applies to The Trivia API's cached questions, where the staleness problem actually occurs.
