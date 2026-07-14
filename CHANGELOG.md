@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.10.6
+
+- Fixed some recipients (most often on iOS) seeing "Waiting for this message. This may take a while." in place of the bot's replies. When a recipient's device fails to decrypt a message it asks the bot to re-send it via a retry receipt, but the socket's `getMessage` callback always returned `undefined`, so Baileys had nothing to re-send and the message stayed stuck. Outbound messages are now cached briefly (10 min, keyed by message ID) so these decryption retries can be answered.
+
 ## 3.10.5
 
 - Fixed the 3.10.4 category-label fix overriding the display category for local fallback questions too, which broke their intentional display aliases (e.g. "Movies" for the `film` category, "Technology" for `computers`). The override now only applies to The Trivia API's cached questions, where the staleness problem actually occurs.
