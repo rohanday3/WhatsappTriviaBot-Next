@@ -1,0 +1,18 @@
+name: Version check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  version-consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # No dependency install needed — the check uses only Node built-ins.
+      - name: Check version consistency
+        run: node scripts/check-version.mjs
