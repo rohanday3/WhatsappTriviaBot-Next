@@ -88,10 +88,12 @@ test('ignores a late answer that only reaches the bot after the game moved to th
     // that only reached the bot after this question opened, must not be credited here.
     const staleSendMs = openedAt - 5000;
     assert.equal(await engine.answer(chat, player, 'A', staleSendMs), false);
-    assert.equal(repository.getGameScores(game.id).length, 0);
+    assert.equal(repository.hasAnswered(game.id, 0, player.id), false);
+    assert.equal(repository.getGameScores(game.id)[0]!.score, 0);
 
-    // A genuine answer to the current question is still accepted.
+    // A genuine answer to the current question is still accepted and scored.
     assert.equal(await engine.answer(chat, player, 'A', openedAt + 200), true);
+    assert.equal(repository.hasAnswered(game.id, 0, player.id), true);
     assert.equal(repository.getGameScores(game.id)[0]!.score > 0, true);
 
     await engine.stopGame(chat);
