@@ -8,6 +8,7 @@ import makeWASocket, {
   type GroupMetadata,
   type WASocket,
   type WAMessage,
+  type WAMessageContent,
 } from 'baileys';
 import { config } from '../config.js';
 import { Database } from '../db/database.js';
@@ -24,6 +25,16 @@ interface CachedMetadata {
   expiresAt: number;
 }
 
+interface CachedSentMessage {
+  content: WAMessageContent;
+  expiresAt: number;
+}
+
+/** How long a sent message stays available to answer decryption-retry receipts (iOS "waiting for message" fix). */
+const SENT_MESSAGE_TTL_MS = 10 * 60_000;
+/** Upper bound on the outbound retry cache so it can't grow without limit. */
+const SENT_MESSAGE_CACHE_MAX = 2_000;
+
 export class WhatsAppTransport {
   private socket: WASocket | null = null;
   private state: ConnectionState = 'starting';
@@ -33,6 +44,7 @@ export class WhatsAppTransport {
   private pairingRequested = false;
   private readonly sendQueue = new KeyedQueue(config.maxOutboundQueuePerChat);
   private readonly metadataCache = new Map<string, CachedMetadata>();
+  private readonly sentMessages = new Map<string, CachedSentMessage>();
 
   constructor(
     private readonly db: Database,
@@ -85,7 +97,8 @@ export class WhatsAppTransport {
       let lastError: unknown;
       for (let attempt = 1; attempt <= 3; attempt += 1) {
         try {
-          await socket.sendMessage(chatId, { text });
+          const sent = await socket.sendMessage(chatId, { text });
+          if (sent?.key.id && sent.message) this.rememberSentMessage(sent.key.id, sent.message);
           return;
         } catch (error) {
           lastError = error;
@@ -137,7 +150,7 @@ export class WhatsAppTransport {
       syncFullHistory: false,
       emitOwnEvents: false,
       generateHighQualityLinkPreview: false,
-      getMessage: async () => undefined,
+      getMessage: async (key) => this.recallSentMessage(key.id),
     });
     this.socket = socket;
 
@@ -239,6 +252,27 @@ export class WhatsAppTransport {
     const value = await this.socket.groupMetadata(chatId);
     this.metadataCache.set(chatId, { value, expiresAt: Date.now() + 5 * 60_000 });
     return value;
+  }
+
+  /** Cache an outbound message so Baileys can re-send it if the recipient asks for a decryption retry. */
+  private rememberSentMessage(id: string, content: WAMessageContent): void {
+    if (this.sentMessages.size >= SENT_MESSAGE_CACHE_MAX) {
+      const oldest = this.sentMessages.keys().next().value;
+      if (oldest !== undefined) this.sentMessages.delete(oldest);
+    }
+    this.sentMessages.set(id, { content, expiresAt: Date.now() + SENT_MESSAGE_TTL_MS });
+  }
+
+  /** Look up a previously sent message to satisfy a retry receipt; returns undefined once it has expired. */
+  private recallSentMessage(id: string | null | undefined): WAMessageContent | undefined {
+    if (!id) return undefined;
+    const entry = this.sentMessages.get(id);
+    if (!entry) return undefined;
+    if (entry.expiresAt <= Date.now()) {
+      this.sentMessages.delete(id);
+      return undefined;
+    }
+    return entry.content;
   }
 
   private setState(state: ConnectionState): void {
