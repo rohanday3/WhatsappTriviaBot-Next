@@ -12,7 +12,8 @@
     "start": "node --disable-warning=ExperimentalWarning dist/index.js",
     "start:pair": "PAIRING_MODE=code node --disable-warning=ExperimentalWarning dist/index.js",
     "test": "tsx --test test/**/*.test.ts",
-    "check": "npm run typecheck && npm test && npm run build",
+    "version:check": "node scripts/check-version.mjs",
+    "check": "npm run version:check && npm run typecheck && npm test && npm run build",
     "doctor": "node --disable-warning=ExperimentalWarning scripts/doctor.mjs",
     "backup": "node --disable-warning=ExperimentalWarning scripts/backup.mjs"
   },
