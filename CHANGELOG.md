@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.11.0
+
+- Fixed the bot being logged out of WhatsApp every few weeks and needing a manual re-pair. Baileys ships a hardcoded WhatsApp Web client version, and WhatsApp retires old ones periodically; once retired, every WhatsApp edge node refuses the handshake with status 405. The connection is now opened with the version reported by `fetchLatestBaileysVersion()`, falling back to the bundled one if the lookup is unavailable. Set `WHATSAPP_VERSION_CHECK=0` to skip the lookup and pin to the bundled version.
+- Disconnect reasons are now sorted into three classes instead of two. Only 401 and 403 are treated as terminal (the session is gone and re-pairing is required). 405, 440 and 500 are treated as server-side refusals that retrying cannot clear on its own, and back off to a 15-minute ceiling. Everything else keeps the previous 60-second ceiling, so a 515 restart-required still reconnects promptly. Previously every non-401 reason retried at the 60-second ceiling forever — a single retired-version outage produced over 700 failed attempts in 12 hours, which appears to have escalated the refusal into an outright logout.
+- The reconnect backoff now survives a service restart. It is stored in a new `service_state` table and reloaded at startup, so restarting during an outage no longer resets the ladder and replays its fast rungs against a server that is already refusing. The stored state is cleared on a successful connection and ignored if the last failure is more than an hour old.
+- Fixed a superseded WhatsApp socket being able to write its stale in-memory credentials over the live session's. The `creds.update` handler now checks that it still belongs to the current socket, matching the guard the other event handlers already had, and a replaced socket is now explicitly ended instead of being left to linger.
+
 ## 3.10.6
 
 - Fixed an answer sent just as a question's timer ran out sometimes being counted for the *next* question. If the message only reached the bot after the round had already revealed and advanced, it was recorded against whatever question was open by then. Answers are now matched to the question that was on screen when they were sent (using the message's send timestamp), so a late answer to one question can no longer leak into the next.

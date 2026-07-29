@@ -3,6 +3,7 @@ import makeWASocket, {
   Browsers,
   DisconnectReason,
   extractMessageContent,
+  fetchLatestBaileysVersion,
   jidNormalizedUser,
   normalizeMessageContent,
   type GroupMetadata,
@@ -34,6 +35,48 @@ interface CachedSentMessage {
 const SENT_MESSAGE_TTL_MS = 10 * 60_000;
 /** Upper bound on the outbound retry cache so it can't grow without limit. */
 const SENT_MESSAGE_CACHE_MAX = 2_000;
+
+/** Persisted so a service restart cannot reset an in-progress backoff back to its fast rungs. */
+const RECONNECT_STATE_KEY = 'whatsapp.reconnect';
+
+interface PersistedReconnectState {
+  attempts: number;
+  lastFailureAt: number;
+}
+
+/**
+ * The session is gone; reconnecting can never succeed and the operator must re-pair.
+ * 401 loggedOut, 403 forbidden.
+ */
+const TERMINAL_STATUS = new Set<number>([DisconnectReason.loggedOut, 403]);
+
+/**
+ * The server will keep refusing until something outside this process changes: a retired
+ * WhatsApp Web client version (405), another connection holding the session (440), or session
+ * state the server rejects (500). These are not transient, so they get a far longer ceiling —
+ * retrying 405 on the ordinary ladder produced ~700 pointless attempts in 12 hours before the
+ * server escalated the refusal to an outright 401 logout.
+ */
+const HARD_FAILURE_STATUS = new Set<number>([405, 440, 500]);
+
+/** The session is dead; only re-pairing can recover it. */
+export function isTerminalStatus(statusCode: number | undefined): boolean {
+  return statusCode !== undefined && TERMINAL_STATUS.has(statusCode);
+}
+
+/** Retrying may eventually work, but not soon and not on the fast ladder. */
+export function isHardFailureStatus(statusCode: number | undefined): boolean {
+  return statusCode !== undefined && HARD_FAILURE_STATUS.has(statusCode);
+}
+
+/** Backoff before jitter. Exported for testing. */
+export function reconnectBaseDelayMs(attempt: number, statusCode: number | undefined): number {
+  const ceiling = isHardFailureStatus(statusCode)
+    ? config.reconnectHardFailureDelayMs
+    : config.reconnectMaxDelayMs;
+  // Exponent capped high enough that the hard-failure ceiling is actually reachable.
+  return Math.min(ceiling, 1000 * 2 ** Math.min(Math.max(attempt, 1) - 1, 10));
+}
 
 export class WhatsAppTransport {
   private socket: WASocket | null = null;
@@ -71,6 +114,13 @@ export class WhatsAppTransport {
 
   async start(): Promise<void> {
     this.stopped = false;
+    this.reconnectAttempts = this.loadReconnectAttempts();
+    if (this.reconnectAttempts > 0) {
+      logger.warn(
+        { attempt: this.reconnectAttempts },
+        'Resuming a reconnect backoff carried over from the previous run',
+      );
+    }
     await this.connect();
   }
 
@@ -79,15 +129,7 @@ export class WhatsAppTransport {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     this.setState('disconnected');
-    const socket = this.socket;
-    this.socket = null;
-    if (socket) {
-      try {
-        socket.end(new Error('Service shutting down'));
-      } catch {
-        // The socket may already be closed.
-      }
-    }
+    this.discardSocket();
   }
 
   async sendText(chatId: string, text: string): Promise<void> {
@@ -141,9 +183,14 @@ export class WhatsAppTransport {
   private async connect(): Promise<void> {
     if (this.stopped) return;
     this.setState('connecting');
+    this.discardSocket();
     const { state, saveCreds } = useSqliteAuthState(this.db);
+    const version = await this.resolveVersion();
+    // The version lookup is a network round trip; a shutdown may have landed while it was in flight.
+    if (this.stopped) return;
     const socket = makeWASocket({
       auth: state,
+      ...(version ? { version } : {}),
       browser: Browsers.macOS('Google Chrome'),
       logger: logger.child({ component: 'baileys' }),
       markOnlineOnConnect: false,
@@ -154,7 +201,12 @@ export class WhatsAppTransport {
     });
     this.socket = socket;
 
-    socket.ev.on('creds.update', saveCreds);
+    // Guarded like every other handler below: a superseded socket must never write its stale
+    // in-memory credentials over the live session's.
+    socket.ev.on('creds.update', async () => {
+      if (socket !== this.socket) return;
+      await saveCreds();
+    });
     socket.ev.on('connection.update', async (update) => {
       if (socket !== this.socket || this.stopped) return;
       const { connection, lastDisconnect, qr } = update;
@@ -184,6 +236,7 @@ export class WhatsAppTransport {
       }
       if (connection === 'open') {
         this.reconnectAttempts = 0;
+        this.clearReconnectState();
         if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
         this.pairingRequested = false;
@@ -192,11 +245,21 @@ export class WhatsAppTransport {
       }
       if (connection === 'close') {
         const statusCode = disconnectStatus(lastDisconnect?.error);
-        if (statusCode === DisconnectReason.loggedOut) {
+        if (isTerminalStatus(statusCode)) {
           this.setState('logged_out');
-          logger.error('WhatsApp session logged out. Clear auth tables or use a fresh database to pair again.');
-          this.onOperationalError(lastDisconnect?.error, 'WhatsApp session logged out');
+          this.clearReconnectState();
+          logger.error(
+            { statusCode },
+            'WhatsApp session is no longer valid. Clear auth tables or use a fresh database to pair again.',
+          );
+          this.onOperationalError(lastDisconnect?.error, `WhatsApp session logged out (code ${statusCode})`);
           return;
+        }
+        if (statusCode === 405) {
+          logger.error(
+            { statusCode },
+            'WhatsApp refused the connection (405). This usually means the WhatsApp Web client version is retired; retrying slowly to avoid the session being invalidated.',
+          );
         }
         this.setState('disconnected');
         this.onOperationalError(lastDisconnect?.error, `WhatsApp connection closed${statusCode ? ` (code ${statusCode})` : ''}`);
@@ -229,9 +292,14 @@ export class WhatsAppTransport {
   private scheduleReconnect(statusCode: number | undefined): void {
     if (this.reconnectTimer || this.stopped) return;
     this.reconnectAttempts += 1;
-    const base = Math.min(60_000, 1000 * 2 ** Math.min(this.reconnectAttempts - 1, 6));
-    const delay = base + Math.floor(Math.random() * 1000);
-    logger.warn({ statusCode, delay, attempt: this.reconnectAttempts }, 'WhatsApp disconnected; reconnect scheduled');
+    this.saveReconnectState();
+    const hardFailure = isHardFailureStatus(statusCode);
+    const base = reconnectBaseDelayMs(this.reconnectAttempts, statusCode);
+    const delay = base + Math.floor(Math.random() * Math.max(1000, base * 0.1));
+    logger.warn(
+      { statusCode, delay, attempt: this.reconnectAttempts, hardFailure },
+      'WhatsApp disconnected; reconnect scheduled',
+    );
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.stopped && this.state !== 'connected') {
@@ -243,6 +311,87 @@ export class WhatsAppTransport {
       }
     }, delay);
     this.reconnectTimer.unref();
+  }
+
+  /**
+   * Baileys bundles a hardcoded WhatsApp Web version that WhatsApp retires every few weeks.
+   * Once retired, every edge node refuses the handshake with 405. Returns null to fall back to
+   * the bundled version when the lookup is disabled or unreachable.
+   */
+  private async resolveVersion(): Promise<[number, number, number] | null> {
+    if (!config.whatsappVersionCheck) return null;
+    try {
+      const result = await Promise.race([
+        fetchLatestBaileysVersion(),
+        new Promise<never>((_resolve, reject) => {
+          setTimeout(
+            () => reject(new Error('Version lookup timed out')),
+            config.whatsappVersionTimeoutMs,
+          ).unref();
+        }),
+      ]);
+      logger.info({ version: result.version, isLatest: result.isLatest }, 'WhatsApp Web version resolved');
+      return result.version;
+    } catch (error) {
+      logger.warn({ err: error }, 'Could not fetch the current WhatsApp Web version; using the bundled one');
+      return null;
+    }
+  }
+
+  /** Ends the outgoing socket so a superseded connection cannot linger and emit events. */
+  private discardSocket(): void {
+    const previous = this.socket;
+    this.socket = null;
+    if (!previous) return;
+    try {
+      previous.end(new Error('Superseded by a new connection'));
+    } catch {
+      // The socket may already be closed.
+    }
+  }
+
+  private loadReconnectAttempts(): number {
+    const row = this.db.get<{ value: string }>(
+      'SELECT value FROM service_state WHERE key = ?',
+      [RECONNECT_STATE_KEY],
+    );
+    if (!row) return 0;
+    try {
+      const parsed = JSON.parse(row.value) as PersistedReconnectState;
+      if (typeof parsed.attempts !== 'number' || typeof parsed.lastFailureAt !== 'number') return 0;
+      // A long-quiet gap means the previous outage is over; start the ladder fresh.
+      if (Date.now() - parsed.lastFailureAt > config.reconnectStateTtlMs) return 0;
+      return Math.max(0, parsed.attempts);
+    } catch {
+      return 0;
+    }
+  }
+
+  private saveReconnectState(): void {
+    const value: PersistedReconnectState = {
+      attempts: this.reconnectAttempts,
+      lastFailureAt: Date.now(),
+    };
+    try {
+      this.db.run(
+        `INSERT INTO service_state(key, value, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET
+           value = excluded.value,
+           updated_at = excluded.updated_at`,
+        [RECONNECT_STATE_KEY, JSON.stringify(value), Date.now()],
+      );
+    } catch (error) {
+      logger.warn({ err: error }, 'Could not persist reconnect backoff state');
+    }
+  }
+
+  private clearReconnectState(): void {
+    try {
+      this.db.run('DELETE FROM service_state WHERE key = ?', [RECONNECT_STATE_KEY]);
+    } catch (error) {
+      logger.warn({ err: error }, 'Could not clear reconnect backoff state');
+    }
   }
 
   private async groupMetadata(chatId: string): Promise<GroupMetadata> {
