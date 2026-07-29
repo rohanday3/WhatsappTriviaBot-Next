@@ -48,6 +48,18 @@ export const config = Object.freeze({
   maxConcurrentGames: integer('MAX_CONCURRENT_GAMES', 250, 1, 10_000),
   maxOutboundQueuePerChat: integer('MAX_OUTBOUND_QUEUE_PER_CHAT', 50, 5, 500),
 
+  // Baileys ships a hardcoded WhatsApp Web client version. WhatsApp retires old ones every few
+  // weeks, and a retired version is refused with status 405, so we look up the current one at
+  // connect time. Set WHATSAPP_VERSION_CHECK=0 to pin to the bundled version instead.
+  whatsappVersionCheck: bool('WHATSAPP_VERSION_CHECK', true),
+  whatsappVersionTimeoutMs: integer('WHATSAPP_VERSION_TIMEOUT_MS', 5000, 500, 30_000),
+  // Ceiling for ordinary transient drops (network blips, server restarts).
+  reconnectMaxDelayMs: integer('RECONNECT_MAX_DELAY_MS', 60_000, 1000, 600_000),
+  // Ceiling for rejections that no amount of retrying can clear on its own.
+  reconnectHardFailureDelayMs: integer('RECONNECT_HARD_FAILURE_DELAY_MS', 900_000, 60_000, 3_600_000),
+  // Backoff state older than this is treated as unrelated to the current outage.
+  reconnectStateTtlMs: integer('RECONNECT_STATE_TTL_MS', 3_600_000, 60_000, 86_400_000),
+
   // TRIVIA_API_ENABLED remains as a master switch for backwards compatibility.
   triviaApiEnabled,
   theTriviaApiEnabled: triviaApiEnabled && bool('THE_TRIVIA_API_ENABLED', true),
